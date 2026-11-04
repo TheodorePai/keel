@@ -1,0 +1,74 @@
+# Keel 笔记类型定义（决策 0002）。项目在 keel.toml 中引用，不复制。
+# dated: 文件名以 date 开头；numbered: 文件名以四位编号开头；sections: 必须有包含这些词的二级标题。
+# area: 可选领域属性，keel.toml 的 areas 可限定取值。
+# kind: living = 活文档，就地更新；record = 记录，带日期，终态后只追加。
+
+[types.reference]
+dir = "reference"
+kind = "living"
+question = "系统现在是什么：架构、接口契约、数据 schema"
+status = ["draft", "current", "deprecated"]
+
+[types.concept]
+dir = "concepts"
+kind = "living"
+question = "为什么这样设计：理念、原理"
+status = ["draft", "current", "deprecated"]
+
+[types.decision]
+dir = "decisions"
+kind = "record"
+question = "选了什么、为什么、放弃了什么"
+status = ["proposed", "accepted", "rejected", "superseded"]
+final = ["accepted", "rejected", "superseded"]
+numbered = true
+sections = ["决定", "理由"]
+
+[types.protocol]
+dir = "protocols"
+kind = "record"
+question = "测量前冻结：输入、样本、指标、门槛"
+status = ["draft", "frozen"]
+final = ["frozen"]
+dated = true
+sections = ["输入", "指标"]
+
+
+[types.report]
+dir = "reports"
+kind = "record"
+question = "按方案测了，观察到什么"
+status = ["draft", "final"]
+final = ["final"]
+dated = true
+sections = ["结论"]
+
+
+[types.incident]
+dir = "incidents"
+kind = "record"
+question = "计划外失败：现象、原因、修复、验证"
+status = ["open", "resolved"]
+final = []
+required = ["cause"]
+dated = true
+sections = ["现象", "原因", "修复"]
+
+
+[types.research]
+dir = "research"
+kind = "record"
+question = "外部知识：来源、核实日期、结论"
+status = ["draft", "final"]
+final = []
+dated = true
+sections = ["结论"]
+
+
+[types.idea]
+dir = "ideas"
+kind = "record"
+question = "自己的判断、灵感，未验证"
+status = ["open", "adopted", "dropped"]
+final = []
+dated = true

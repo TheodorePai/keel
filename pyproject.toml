@@ -1,0 +1,22 @@
+[project]
+name = "keel"
+dynamic = ["version"]
+description = "Keel：跨项目的 Agent 工作流底座（笔记类型、结构检查、大文件资产、共享 skill）"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY.md", "keel/data/obsidian/LICENSES/*"]
+dependencies = []  # 只用标准库；HF 功能调用 hf 命令
+
+[project.scripts]
+keel = "keel.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "keel/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["keel"]
+exclude = ["**/__pycache__"]

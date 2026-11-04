@@ -1,0 +1,8 @@
+{
+  "cssTheme": "Baseline",
+  "floatingNavigation": true,
+  "showRibbon": true,
+  "showViewHeader": true,
+  "translucency": true,
+  "nativeMenus": true
+}

@@ -1,0 +1,70 @@
+# Keel 笔记视图（keel init 生成到 _keel/notes.base，勿直接编辑生成件）
+filters:
+  and:
+    - file.inFolder("{{notes_root}}")
+    - 'file.ext == "md"'
+    - 'note.type != null'
+properties:
+  note.type:
+    displayName: 类型
+  note.status:
+    displayName: 状态
+  note.date:
+    displayName: 日期
+  note.area:
+    displayName: 领域
+  note.beads:
+    displayName: 任务
+views:
+  - type: table
+    name: 全部笔记
+    groupBy:
+      property: note.type
+      direction: ASC
+    order:
+      - file.name
+      - note.status
+      - note.date
+      - note.area
+      - note.beads
+  - type: table
+    name: 待处理
+    filters:
+      or:
+        - 'note.status == "draft"'
+        - 'note.status == "proposed"'
+        - 'note.status == "open"'
+    groupBy:
+      property: note.type
+      direction: ASC
+    order:
+      - file.name
+      - note.status
+      - note.date
+      - note.beads
+  - type: table
+    name: 事故
+    filters:
+      and:
+        - 'note.type == "incident"'
+    groupBy:
+      property: note.status
+      direction: ASC
+    order:
+      - file.name
+      - note.cause
+      - note.date
+      - note.area
+  - type: table
+    name: 已失效
+    filters:
+      or:
+        - 'note.status == "superseded"'
+        - 'note.status == "deprecated"'
+        - 'note.status == "rejected"'
+        - 'note.status == "dropped"'
+    order:
+      - file.name
+      - note.type
+      - note.status
+      - note.date
