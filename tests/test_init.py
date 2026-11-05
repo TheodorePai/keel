@@ -51,6 +51,7 @@ class TestInitFailures(Base):
 
         with patch.object(cli, "sh", side_effect=task_command), \
                 patch.object(cli.shutil, "which", return_value="/fake/bd"), \
+                patch.object(cli, "setup_beads_integrations", return_value=[]), \
                 patch.object(cli, "install_hook", return_value=[]) as hooks, \
                 patch.object(cli, "commit_managed", return_value=[]), \
                 patch.object(cli, "publish_github", return_value=[]) as publish:
@@ -85,6 +86,7 @@ class TestInitFailures(Base):
             publish.assert_not_called()
 
     def test_commit_hook_failure_stops_publish_and_retry_keeps_other_changes(self):
+        (self.root / "CLAUDE.md").unlink()
         self.commit()
         (self.root / "keel.toml").write_text('ignore = []\n')
         (self.root / "app.py").write_text('print("user work")\n')
@@ -93,6 +95,7 @@ class TestInitFailures(Base):
         hook.write_text("#!/bin/sh\necho rejected >&2\nexit 1\n")
         hook.chmod(0o755)
         with patch.object(cli, "setup_beads", return_value=[]), \
+                patch.object(cli, "setup_beads_integrations", return_value=[]), \
                 patch.object(cli, "install_hook", return_value=[]), \
                 patch.object(cli, "publish_github", return_value=[]) as publish:
             with self.assertRaisesRegex(SystemExit, "rejected"):
@@ -105,6 +108,8 @@ class TestInitFailures(Base):
         self.assertEqual(staged.strip(), "app.py")
         committed = subprocess.check_output(["git", "ls-tree", "--name-only", "HEAD"], cwd=self.root, text=True)
         self.assertNotIn("app.py", committed)
+        self.assertEqual(subprocess.check_output(
+            ["git", "show", "HEAD:CLAUDE.md"], cwd=self.root, text=True), "@AGENTS.md\n")
 
     def test_missing_bd_and_git_init_failure_are_errors(self):
         with patch.object(cli.shutil, "which", return_value=None):
@@ -122,11 +127,28 @@ class TestInitFailures(Base):
 class TestInitLayout(Base):
     def test_fresh_init_scaffolds_work_and_passes_check(self):
         (self.root / "keel.toml").unlink()
+        (self.root / "AGENTS.md").unlink()
+        (self.root / "CLAUDE.md").unlink()
         cli.init_project(self.root)
         self.assertTrue((self.root / "work/README.md").is_file())
+        self.assertEqual((self.root / "CLAUDE.md").read_text(), "@AGENTS.md\n")
         self.assertIn("work/.local/", (self.root / ".gitignore").read_text().splitlines())
         (self.root / "work/.local/run").mkdir(parents=True)
         (self.root / "work/.local/run/log.txt").write_text("x\n")
         self.assertEqual([f for f in cli.check(cli.load_project(self.root)) if f.level == "error"], [])
         cli.init_project(self.root)
         self.assertEqual((self.root / ".gitignore").read_text().count("work/.local/"), 1)
+
+    def test_existing_claude_rules_stop_init_before_commit_or_publish(self):
+        path = self.root / "CLAUDE.md"
+        original = "@AGENTS.md\n\n已有规则\n"
+        path.write_text(original)
+        with patch.object(cli, "setup_beads", return_value=[]), \
+                patch.object(cli, "install_hook", return_value=[]), \
+                patch.object(cli, "commit_managed") as commit, \
+                patch.object(cli, "publish_github") as publish:
+            with self.assertRaisesRegex(SystemExit, "迁入 AGENTS.md"):
+                cli.init_project(self.root, commit=True, github=True)
+            commit.assert_not_called()
+            publish.assert_not_called()
+        self.assertEqual(path.read_text(), original)

@@ -16,12 +16,13 @@ import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from keel import __version__, assets, layout, secrets, skills
+from keel import __version__, assets, entrypoints, layout, secrets, skills
 
 DATA_DIR = Path(__file__).resolve().parent / "data"   # 随安装包分发，不依赖 Keel 仓库
 SCHEMA_PATH = DATA_DIR / "schema.toml"
 TEMPLATES_DIR = DATA_DIR / "notes"
 CONFIG_NAME = "keel.toml"
+CLAUDE_POINTER = "@AGENTS.md\n"
 NOTES_ROOT = "docs"   # 决策 0007：固定，不可配置
 OBSIDIAN_DIR = DATA_DIR / "obsidian"
 ASSETS_DIR = "assets"
@@ -177,7 +178,7 @@ def collect_notes(project: Project) -> list[Note]:
 
 def check(project: Project, *, skill_updates: bool = True) -> list[Finding]:
     notes = collect_notes(project)
-    findings: list[Finding] = []
+    findings = check_agent_entrypoints(project.root, project.config, require_work_mode=skill_updates)
     for note in notes:
         findings += check_placement(project, note)
     typed = [n for n in notes if not n.meta_error and n.meta.get("type") in project.types]
@@ -197,6 +198,42 @@ def check(project: Project, *, skill_updates: bool = True) -> list[Finding]:
     if skill_updates:  # 只检查当前状态；逐个历史提交不重跑项目命令
         findings += [Finding(*f) for f in layout.verify(project.history_root or project.root, project.config)]
     return findings
+
+
+def valid_claude_pointer(path: Path) -> bool:
+    try:
+        return (not path.is_symlink() and path.is_file()
+                and path.read_text().splitlines() == [CLAUDE_POINTER.rstrip("\n")])
+    except (OSError, UnicodeError):
+        return False
+
+
+def check_agent_entrypoints(root: Path, config: dict, *, require_work_mode: bool = True) -> list[Finding]:
+    out = []
+    if not valid_claude_pointer(root / "CLAUDE.md"):
+        out.append(Finding("CLAUDE.md", "agent-entrypoint",
+                           "必须是只含一行 @AGENTS.md 的普通文件；缺失时运行 keel init，"
+                           "已有规则请迁入 AGENTS.md 后仅保留该导入"))
+    if not (root / "AGENTS.md").is_file():
+        out.append(Finding("AGENTS.md", "agent-entrypoint",
+                           "CLAUDE.md 的导入目标不存在或不是文件；运行 keel init 补齐"))
+    else:
+        try:
+            text = (root / "AGENTS.md").read_text()
+        except (OSError, UnicodeError):
+            out.append(Finding("AGENTS.md", "agent-entrypoint", "必须是可读取的文本文件"))
+            return out
+        targets = markdown_link_targets(text)
+        # 历史快照不追溯施加新增的接入约定；其中已有的链接仍核对可达性。
+        if require_work_mode and "keel" in config.get("skills", []) and (
+                entrypoints.WORK_MODE_TARGET not in targets
+                or not (root / entrypoints.WORK_MODE_TARGET).is_file()):
+            out.append(Finding("AGENTS.md", "work-mode",
+                               "缺少 Keel 工作模式入口；运行 keel init 补齐，保留项目规则"))
+        for target in targets:
+            if not (root / target).exists():
+                out.append(Finding("AGENTS.md", "agent-entrypoint-link", f"链接 {target} 指向不存在的文件"))
+    return out
 
 
 def display(project: Project, note: Note) -> str:
@@ -380,6 +417,21 @@ WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
 MDLINK_RE = re.compile(r"\]\((?:<([^>]+)>|([^)\s]+))\)")
 
 
+def markdown_link_targets(text: str) -> list[str]:
+    """仅取正文的本地 Markdown 文件链接；示例、行内代码和远端链接不参与。"""
+    text = re.sub(r"`[^`\n]*`", "", FENCE_RE.sub("", text))
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    targets = []
+    for angled, plain in MDLINK_RE.findall(text):
+        target = angled or plain
+        if re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith("#"):
+            continue
+        path = urllib.parse.unquote(target.split("#")[0])
+        if path:
+            targets.append(os.path.normpath(path))
+    return targets
+
+
 def check_links(project: Project, notes: list[Note]) -> list[Finding]:
     names = {p.stem for p in project.root.rglob("*.md")} | {p.name for p in project.root.rglob("*")}
     out = []
@@ -390,12 +442,8 @@ def check_links(project: Project, notes: list[Note]) -> list[Finding]:
             target = target.strip()
             if Path(target).name not in names and Path(target).stem not in names:
                 out.append(Finding(display(project, note), "link", f"[[{target}]] 指向不存在的笔记"))
-        for angled, plain in MDLINK_RE.findall(text):
-            target = angled or plain
-            if re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith("#"):
-                continue
-            path = urllib.parse.unquote(target.split("#")[0])
-            if path and not (note.path.parent / path).exists():
+        for target in markdown_link_targets(text):
+            if not (note.path.parent / target).exists():
                 out.append(Finding(display(project, note), "link", f"链接 {target} 指向不存在的文件"))
     return out
 
@@ -478,7 +526,9 @@ def new_note(project: Project, kind: str, title: str, slug: str | None, beads: l
     return path
 
 
-MANAGED_PATHS = [CONFIG_NAME, skills.LOCK_NAME, ".gitignore", "AGENTS.md", ".agents/skills", ".claude/skills",
+MANAGED_PATHS = [CONFIG_NAME, skills.LOCK_NAME, ".gitignore", "AGENTS.md", "CLAUDE.md", ".agents/skills", ".claude/skills",
+                 ".claude/settings.json", ".codex/config.toml", ".codex/hooks.json",
+                 ".cursor/hooks.json", ".cursor/rules/beads.mdc",
                  ".obsidian", ".beads/hooks/pre-commit", secrets.FNOX_FILE, "work/README.md"]
 
 
@@ -518,10 +568,37 @@ def setup_beads(root: Path, prefix: str | None) -> list[str]:
     tracked = sh(root, "git", "ls-files", "--error-unmatch", ".beads/metadata.json").returncode == 0
     if not tracked:
         # 未完成的本地初始化可能留下 .beads/；重新 init，不误当成远端克隆。
-        required_step(root, "bd", "init", "--prefix", prefix or assets.project_slug(root), "--init-if-missing")
+        required_step(root, "bd", "init", "--prefix", prefix or assets.project_slug(root),
+                      "--init-if-missing", "--skip-agents")
         return ["已初始化任务库（bd init）"]
     required_step(root, "bd", "bootstrap")
     return ["已取回任务库（bd bootstrap）"]
+
+
+def setup_beads_integrations(root: Path) -> list[str]:
+    """由 bd 维护 skill 和各编辑器钩子，入口正文由 Keel 统一维护。"""
+    # bd setup 同时写入口与钩子。无论成功或失败，都恢复原入口；已有项目 skill
+    # 和 Cursor 规则也不让上游 setup 覆盖，新的文件则保留供 Keel 同步和提交。
+    names = ("AGENTS.md", "CLAUDE.md", ".agents/skills/beads/SKILL.md", ".cursor/rules/beads.mdc")
+    saved = {}
+    for name in names:
+        path = root / name
+        if path.is_symlink() or any((root / p).is_symlink() for p in Path(name).parents):
+            raise SystemExit(f"{name} 不能是软链接；原文未改动")
+        if path.exists() and not path.is_file():
+            raise SystemExit(f"{name} 必须是普通文件；原文未改动")
+        saved[name] = path.read_bytes() if path.exists() else None
+    try:
+        for recipe in ("claude", "codex", "cursor"):
+            required_step(root, "bd", "setup", recipe)
+    finally:
+        for name, original in saved.items():
+            path = root / name
+            if original is not None:
+                path.write_bytes(original)
+            elif name in ("AGENTS.md", "CLAUDE.md"):
+                path.unlink(missing_ok=True)
+    return ["已启用 Beads skill 与 Claude/Codex/Cursor 上下文钩子"]
 
 
 def commit_managed(root: Path, message: str) -> list[str]:
@@ -577,18 +654,44 @@ def publish_github(root: Path) -> list[str]:
 
 def init_project(root: Path, prefix: str | None = None, commit: bool = False, github: bool = False) -> list[str]:
     done = []
+    prepared = entrypoints.prepare(root)
     if commit and not (root / ".git").exists():
         required_step(root, "git", "init", "-b", "main")
         done.append("已 git init")
     if commit:
         done += setup_beads(root, prefix)  # 先于 Keel 的文件：bd init 会自己提交一次
+        done += setup_beads_integrations(root)
+    done += entrypoints.install_migrations(root, prepared)
     config = root / CONFIG_NAME
     if not config.exists():
         config.write_text(DEFAULT_CONFIG)
         done.append(f"写入 {CONFIG_NAME}")
     done += assets.ensure_storage(root, config)
     done += install_hook(root)
+    done += install_claude_pointer(root)
     done += install_agents_pointer(root)
+    if "keel" in tomllib.loads(config.read_text()).get("skills", []):
+        agents = root / "AGENTS.md"
+        text = agents.read_text()
+        if entrypoints.LEGACY_WORK_MODE_POINTER in text:
+            agents.write_text(text.replace(entrypoints.LEGACY_WORK_MODE_POINTER, entrypoints.WORK_MODE_POINTER))
+            done.append("AGENTS.md 已补充 skill 与常见错误处理方法的提炼约定")
+        elif entrypoints.WORK_MODE_TARGET not in markdown_link_targets(text):
+            agents.write_text(text.rstrip() + "\n\n" + entrypoints.WORK_MODE_POINTER + "\n")
+            done.append("AGENTS.md 已接入 Keel 默认工作模式")
+        elif entrypoints.SKILL_CAPTURE_RULE not in text:
+            agents.write_text(text.rstrip() + "\n\n- " + entrypoints.SKILL_CAPTURE_RULE
+                              + "提炼与验收按已有工作模式入口执行。\n")
+            done.append("AGENTS.md 已补充 skill 与常见错误处理方法的提炼约定")
+    if (root / ".agents/skills/beads/SKILL.md").is_file():
+        agents = root / "AGENTS.md"
+        text = agents.read_text()
+        if ".agents/skills/beads/SKILL.md" not in text:
+            agents.write_text(text.rstrip() + "\n\n" + entrypoints.BEADS_POINTER + "\n")
+            done.append("AGENTS.md 已指向 beads skill")
+        text = agents.read_text()
+        if entrypoints.GIT_AUTHORITY not in text:
+            agents.write_text(text.rstrip() + "\n\n" + entrypoints.GIT_AUTHORITY + "\n")
     done += install_obsidian_templates(root)
     done += skills.sync(root, tomllib.loads(config.read_text()), __version__) or ["共享 skill 已是最新"]
     done += secrets.init(root, tomllib.loads(config.read_text()))
@@ -604,6 +707,18 @@ def init_project(root: Path, prefix: str | None = None, commit: bool = False, gi
 
 AGENTS_POINTER = ("本项目使用 Keel 工作流（命令 `keel`，说明见 `.agents/skills/keel/SKILL.md`；不是 keel.sh）。"
                   "笔记、大文件、共享 skill 按其执行，提交前 `keel check` 必须通过。")
+
+
+def install_claude_pointer(root: Path) -> list[str]:
+    """Claude 入口只导入 AGENTS.md；已有额外内容必须先迁移，不自动覆盖。"""
+    path = root / "CLAUDE.md"
+    if path.exists() or path.is_symlink():
+        if not valid_claude_pointer(path):
+            raise SystemExit("CLAUDE.md 必须只含一行 @AGENTS.md；已有内容未改动，"
+                             "请将规则迁入 AGENTS.md 后重试 keel init")
+        return []
+    path.write_text(CLAUDE_POINTER)
+    return ["CLAUDE.md 已导入 AGENTS.md"]
 
 
 def install_agents_pointer(root: Path) -> list[str]:

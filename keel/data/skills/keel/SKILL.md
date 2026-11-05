@@ -1,18 +1,20 @@
 ---
 name: keel
-description: 在接入了 Keel 的项目里写笔记、登记大文件、声明或使用密钥、维护共享 skill 时使用。项目根目录有 keel.toml 即已接入。覆盖笔记类型选择、keel new / check / status / asset / fetch / secret / sync 命令，任务与笔记的分工，以及里程碑记录。
+description: 在 Keel 项目中接入或恢复工作环境、维护 Agent 入口或 skill、查询整体任务进度，或处理笔记、资产、项目密钥及结构检查时使用。
 ---
 
 # Keel 工作流
 
-项目根目录有 `keel.toml` 就按本说明工作。结构规则由 `keel check` 执行（pre-commit 已接入），不要绕过。
+项目根目录有 `keel.toml` 即已接入。按当前任务读取相关部分；结构规则由 `keel check` 执行（pre-commit 已接入），不要绕过。
+
+接入项目、维护 `AGENTS.md` 或创建/调整项目 skill 时，读取[工作模式](references/work-mode.md)，统一职责边界、按需调用和能力验收。已有明确任务与位置时直接开展工作。
 
 ## 任务和笔记的分工
 
 - 任务、计划、进度、认领只进 Beads（`bd ready`、`bd update <id> --claim`、`bd close <id>`），不要写成笔记或 TODO 文件。
 - 任务字段各管一件事：`--description` 写为什么做、做什么；`--acceptance` 逐条写可核验的完成条件；进展与交接用 `--append-notes` 追加，不覆盖历史。超过两三句就用 Markdown 小标题和列表分段，简单任务一句话即可。
 - 笔记记录知识和证据，用属性 `beads: [<id>]` 关联任务。
-- 用户问“现在什么情况”时，先运行 `keel status`（进行中、阻塞、里程碑、最近的记录和标签），再按需 `bd show <id>` 展开。
+- 查询项目整体任务进度时，运行 `keel status`（进行中、阻塞、里程碑、最近的记录和标签），再按需 `bd show <id>` 展开；具体运行、测试或设备状态直接查对应来源。
 
 ## 里程碑
 

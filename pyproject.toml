@@ -17,6 +17,8 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 path = "keel/__init__.py"
 
+[tool.hatch.build]
+exclude = ["/.local", "/dist", "**/__pycache__"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["keel"]
-exclude = ["**/__pycache__"]

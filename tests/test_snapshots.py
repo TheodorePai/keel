@@ -14,6 +14,33 @@ from tests.test_check import Base, DECISION, IDEA, run
 
 
 class TestSnapshots(Base):
+    def test_staged_claude_rules_cannot_hide_behind_clean_worktree(self):
+        self.commit()
+        path = self.root / "CLAUDE.md"
+        path.write_text("@AGENTS.md\n额外规则\n")
+        run(self.root, "git", "add", "CLAUDE.md")
+        path.write_text("@AGENTS.md\n")
+        self.assertEqual(check(load_project(self.root)), [])
+        self.assertIn("agent-entrypoint", {f.rule for f in check_git(self.root, staged=True)})
+
+    def test_unstaged_claude_rules_do_not_block_valid_commit(self):
+        self.commit()
+        (self.root / "CLAUDE.md").write_text("@AGENTS.md\n额外规则\n")
+        self.assertIn("agent-entrypoint", {f.rule for f in check(load_project(self.root))})
+        self.assertEqual(check_git(self.root, staged=True), [])
+
+    def test_entrypoints_must_exist_in_staged_tree(self):
+        self.commit()
+        for name in ("CLAUDE.md", "AGENTS.md"):
+            with self.subTest(name=name):
+                path = self.root / name
+                original = path.read_text()
+                run(self.root, "git", "rm", name)
+                path.write_text(original)
+                found = check_git(self.root, staged=True)
+                self.assertEqual([(f.path, f.rule) for f in found], [(name, "agent-entrypoint")])
+                run(self.root, "git", "add", name)
+
     def final_note(self):
         p = self.write("decisions/0001-a.md", DECISION.format(status="accepted", body="原文"))
         self.commit()

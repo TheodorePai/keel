@@ -19,7 +19,7 @@ mkdir my-app && cd my-app
 keel init --github
 ```
 
-依次完成 `git init`、`bd init`、写入规则与配置、装入共享 skill，并且只提交它管理的文件。加 `--github` 时，还会另建一个私有仓库，推送代码和任务库。
+依次完成 `git init`、`bd init`、写入规则与配置、装入共享 skill，并且只提交它管理的文件。Beads 的 skill 和 Claude/Codex/Cursor 上下文钩子由 `bd setup` 安装，入口说明由 Keel 统一维护。加 `--github` 时，还会另建一个私有仓库，推送代码和任务库。
 
 在 Obsidian 里用“打开文件夹作为库”选择项目根目录，就能看到任务面板和笔记视图。
 
@@ -47,11 +47,19 @@ keel fetch    # 需要时取回大文件
 
 ## 接入约定
 
-项目不依赖 Keel 源码：`keel init` 装入 `keel` skill，Agent 从 `.agents/skills/keel/SKILL.md` 读到规则。项目的 `AGENTS.md` 只需一行：
+项目不依赖 Keel 源码：`keel init` 装入 `keel` skill，并在 `AGENTS.md` 补齐 skill 与默认工作模式的简短入口。项目自己的职责、边界及必要调用条件仍写在 `AGENTS.md`；Keel 使用入口例如：
 
 ```text
 本项目使用 Keel 工作流（命令 keel，说明见 .agents/skills/keel/SKILL.md；不是 keel.sh）。
 ```
+
+项目根目录的 `CLAUDE.md` 只保留一行 `@AGENTS.md`，项目规则统一写在 `AGENTS.md`，避免重复和冲突。
+`AGENTS.md` 同时简短引用 `.agents/skills/beads/SKILL.md`；完整任务流程由该 skill 和 `bd prime` 提供。Git 提交、推送及 Dolt 远端同步仍遵循用户和项目的授权。
+`keel init` 补齐缺失的入口，并自动迁移已核实的 Beads 1.3.2 默认模板，保留 `AGENTS.md` 中的项目规则。未知或改过的生成块、`CLAUDE.md` 的额外规则会在初始化前被拦截，保留原文并提示手动迁移。
+`keel check` 和提交前的暂存检查会拦截缺失入口、额外内容及不存在的导入目标。
+
+新项目默认采用[工作模式](keel/data/skills/keel/references/work-mode.md)：常驻约定保留职责、边界和重要能力的调用条件；流程放项目 skill，资料按需读取，确定性工作交给工具。入口与共享说明随 Keel 版本分发，检查器验证可达性与结构；能力是否正确触发仍需按风险用实际场景验收。
+已有项目升级后运行 `keel init` 补齐工作模式入口及 skill 提炼约定，并保留原有规则。经实际验证、值得复用的操作流程和常见错误处理方法应补充已有或创建项目 skill；能用代码、测试或检查防止复发的，同时落实。启用 `keel` skill 却删除工作模式入口，或入口中的本地 Markdown 链接失效时，`keel check` 会报错。
 
 ## 源码
 

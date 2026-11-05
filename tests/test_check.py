@@ -22,6 +22,8 @@ class Base(unittest.TestCase):
         run(self.root, "git", "config", "user.email", "t@t")
         run(self.root, "git", "config", "user.name", "t")
         (self.root / "keel.toml").write_text('ignore = ["sources/*"]\n')
+        (self.root / "AGENTS.md").write_text("# AGENTS.md\n")
+        (self.root / "CLAUDE.md").write_text("@AGENTS.md\n")
         personal = self.root.parent / f"{self.root.name}-personal.toml"
         personal.write_text('hf_namespace = "me"\ngh_owner = "me"\n')
         self._personal, assets.PERSONAL_CONFIG = assets.PERSONAL_CONFIG, personal
@@ -49,6 +51,47 @@ DECISION = "---\ntype: decision\ndate: 2026-11-03\nstatus: {status}\nbeads: []\n
 PROTO = "---\ntype: protocol\ndate: 2026-11-03\nstatus: {s}\n---\n\n## 输入\n\n## 指标\n"
 REPORT = "---\ntype: report\ndate: 2026-11-03\nstatus: draft\nprotocol: ../protocols/2026-11-03-p.md\n---\n\n## 结论\n"
 IDEA = "---\ntype: idea\ndate: 2026-11-03\nstatus: open\n---\n"
+
+
+class TestAgentEntrypoints(Base):
+    def test_only_single_line_import_is_accepted(self):
+        path = self.root / "CLAUDE.md"
+        for text in ("@AGENTS.md", "@AGENTS.md\n", "@AGENTS.md\r\n"):
+            with self.subTest(text=text):
+                path.write_bytes(text.encode())
+                self.assertEqual(self.rules(), [])
+        for text in ("", "# Claude\n@AGENTS.md\n", "@AGENTS.md\n另一条规则\n",
+                     "@AGENTS.md\n\n", " @AGENTS.md\n", "@other.md\n"):
+            with self.subTest(text=text):
+                path.write_text(text)
+                self.assertIn(("agent-entrypoint", "error"), self.rules())
+
+    def test_missing_entrypoints_and_non_file_import_target_are_errors(self):
+        for name in ("CLAUDE.md", "AGENTS.md"):
+            path = self.root / name
+            original = path.read_text()
+            path.unlink()
+            found = check(load_project(self.root))
+            self.assertEqual([(f.path, f.rule) for f in found], [(name, "agent-entrypoint")])
+            path.mkdir()
+            self.assertIn(("agent-entrypoint", "error"), self.rules())
+            path.rmdir()
+            path.write_text(original)
+
+    def test_symlink_or_non_text_claude_entrypoint_is_not_overwritten(self):
+        path = self.root / "CLAUDE.md"
+        target = self.root / ".pointer"
+        target.write_text("@AGENTS.md\n")
+        path.unlink()
+        path.symlink_to(target)
+        self.assertIn(("agent-entrypoint", "error"), self.rules())
+        with self.assertRaisesRegex(SystemExit, "已有内容未改动"):
+            init_project(self.root)
+        self.assertTrue(path.is_symlink())
+        self.assertEqual(target.read_text(), "@AGENTS.md\n")
+        path.unlink()
+        path.write_bytes(b"\xff")
+        self.assertIn(("agent-entrypoint", "error"), self.rules())
 
 
 class TestFrontmatter(unittest.TestCase):

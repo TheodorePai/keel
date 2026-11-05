@@ -1,7 +1,7 @@
 import os
 import tomllib
 
-from keel import __version__, skills
+from keel import __version__, entrypoints, skills
 from keel.cli import check, init_project, load_project
 from tests.test_check import Base
 
@@ -23,6 +23,47 @@ class TestSkills(Base):
         lock = tomllib.loads((self.root / "keel.lock").read_text())
         self.assertEqual((lock["keel_version"], list(lock["skills"])), (__version__, ["keel"]))
         self.assertEqual({r for _, r in self.rules()} & {"skill-sync", "skill-mirror", "skill-format"}, set())
+        self.assertTrue((local / "references/work-mode.md").is_file())
+        self.assertIn(entrypoints.SKILL_CAPTURE_RULE, (self.root / "AGENTS.md").read_text())
+
+    def test_init_upgrades_legacy_work_mode_pointer_and_keeps_project_rules(self):
+        agents = self.root / "AGENTS.md"
+        custom = "\n\n## Project policy\nKeep releases private.\n"
+        agents.write_text("# AGENTS.md\n\n" + entrypoints.LEGACY_WORK_MODE_POINTER + custom)
+        init_project(self.root)
+        upgraded = agents.read_text()
+        self.assertIn(entrypoints.SKILL_CAPTURE_RULE, upgraded)
+        self.assertNotIn(entrypoints.LEGACY_WORK_MODE_POINTER, upgraded)
+        self.assertIn(custom, upgraded)
+        self.assertEqual(upgraded.count(entrypoints.WORK_MODE_TARGET), 1)
+        init_project(self.root)
+        self.assertEqual(agents.read_text(), upgraded)
+
+    def test_work_mode_entrypoint_is_required_and_init_repairs_it_without_losing_rules(self):
+        agents = self.root / "AGENTS.md"
+        custom = "\nProject policy: keep releases private.\n"
+        agents.write_text("\n".join(line for line in agents.read_text().splitlines()
+                                    if entrypoints.WORK_MODE_TARGET not in line) + custom)
+        self.assertIn(("AGENTS.md", "work-mode"), self.rules())
+        init_project(self.root)
+        init_project(self.root)
+        self.assertNotIn(("AGENTS.md", "work-mode"), self.rules())
+        self.assertIn(custom.strip(), agents.read_text())
+        self.assertEqual(agents.read_text().count(entrypoints.WORK_MODE_TARGET), 1)
+
+    def test_work_mode_accepts_project_wording_and_relative_link_not_a_fixed_template(self):
+        custom = f"# Project\n\nOur own policy. [Conventions](./{entrypoints.WORK_MODE_TARGET}#sections)\n"
+        agents = self.root / "AGENTS.md"
+        agents.write_text(custom)
+        self.assertNotIn(("AGENTS.md", "work-mode"), self.rules())
+        init_project(self.root)
+        updated = agents.read_text()
+        self.assertTrue(updated.startswith("# Project\n"))
+        self.assertIn(custom.split("\n\n", 1)[1], updated)
+        self.assertEqual(updated.count(entrypoints.WORK_MODE_TARGET), 1)
+        self.assertIn(entrypoints.SKILL_CAPTURE_RULE, updated)
+        init_project(self.root)
+        self.assertEqual(agents.read_text(), updated)
 
     def test_local_edit_is_flagged_and_not_overwritten(self):
         skill = self.root / ".agents/skills/keel/SKILL.md"
