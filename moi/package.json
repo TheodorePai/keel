@@ -1,0 +1,10 @@
+{
+  "name": "keel-moisurface",
+  "private": true,
+  "dependencies": {
+    "@tabler/icons-react": "3.46.0",
+    "tailwindcss": "4.1.11",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  }
+}

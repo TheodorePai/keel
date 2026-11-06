@@ -161,6 +161,34 @@ class TestAssets(Base):
         with self.assertRaises(assets.AssetError):
             assets.add(self.store, "work/data/screens", "public")
 
+    def test_runtime_paths_are_refused_before_upload_or_manifest_changes(self):
+        path = self.root / "work/.local/state.bin"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"valuable state")
+        for kind in assets.KINDS:
+            with self.subTest(kind=kind), self.assertRaisesRegex(assets.AssetError, r"work/\.local/"):
+                assets.add(self.store, "work/.local/state.bin", kind,
+                           source="https://example.invalid/state", command="make state")
+        alias = self.root / "work/state.bin"
+        alias.symlink_to(path)
+        with self.assertRaises(assets.AssetError):
+            assets.add(self.store, "work/state.bin", "local")
+        self.assertEqual(self.store.load(), {})
+        self.assertEqual(self.remote.n, 0)
+        self.assertEqual(path.read_bytes(), b"valuable state")
+
+    def test_legacy_runtime_manifest_is_rejected_without_touching_files(self):
+        entry = {"kind": "local", "path": "work/.local/state.bin", "digest": "sha256:old"}
+        self.store.save({"state": entry})
+        self.assertIn("asset-local", {f.rule for f in check(load_project(self.root))})
+        self.assertEqual(assets.fetch(self.store, ["state"])[0][1], "error")
+        path = self.root / entry["path"]
+        self.assertFalse(path.exists())
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"keep")
+        self.assertEqual(assets.fetch(self.store, ["state"])[0][1], "error")
+        self.assertEqual(path.read_bytes(), b"keep")
+
     def test_check_flags_tracked_or_unignored_assets(self):
         self.make_dataset()
         assets.add(self.store, "work/data/screens", "dataset", name="screens")

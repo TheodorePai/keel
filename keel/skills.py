@@ -13,6 +13,7 @@ import shutil
 import tomllib
 from pathlib import Path
 
+from keel import __version__
 from keel.assets import dumps_toml
 
 BUNDLED_DIR = Path(__file__).resolve().parent / "data" / "skills"
@@ -152,6 +153,10 @@ def checks(root: Path, config: dict, *, check_updates: bool = True) -> list[tupl
     if sorted(wanted) != sorted(locked):
         out.append(("keel.toml", "skill-sync", "skills 与 keel.lock 不一致，运行 keel sync", "error"))
     available = bundled() if check_updates else {}
+    if check_updates and lock.get("keel_version") and lock["keel_version"] != __version__:
+        out.append(("keel.lock", "keel-version",
+                    f"项目由 keel {lock['keel_version']} 装入，当前为 {__version__}："
+                    "运行 keel sync 与 keel init 迁移入口，再 keel check", "warn"))
     for name, value in locked.items():
         local = base / name
         if not local.exists():

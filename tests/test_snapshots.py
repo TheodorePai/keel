@@ -7,13 +7,43 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from keel import skills
+from keel import assets, skills
 from keel.cli import check, init_project, load_project
 from keel.snapshots import check_git
 from tests.test_check import Base, DECISION, IDEA, run
 
 
 class TestSnapshots(Base):
+    def test_local_tracking_and_ignore_rules_are_checked_in_staged_tree_and_history(self):
+        self.commit()
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        path = self.root / "work/.local/run.log"
+        path.parent.mkdir(parents=True)
+        path.write_text("log\n")
+        run(self.root, "git", "add", "-f", "work/.local/run.log")
+        self.assertIn("local-tracked", {f.rule for f in check_git(self.root, staged=True)})
+        run(self.root, "git", "commit", "--no-verify", "-qm", "invalid runtime content")
+        self.assertIn("local-tracked", {f.rule for f in check_git(self.root, ref="HEAD")})
+        run(self.root, "git", "rm", "--cached", "work/.local/run.log")
+        ignore = self.root / ".gitignore"
+        ignore.write_text("")
+        run(self.root, "git", "add", ".gitignore")
+        ignore.write_text("work/.local/\n")
+        self.assertEqual(check(load_project(self.root)), [])
+        self.assertIn("local-ignore", {f.rule for f in check_git(self.root, staged=True)})
+        run(self.root, "git", "commit", "--no-verify", "-qm", "invalid ignore")
+        self.assertIn("local-ignore", {f.rule for f in check_git(self.root, since=base)})
+
+    def test_runtime_files_cannot_satisfy_note_links(self):
+        local = self.root / "work/.local/cache/cached-only.md"
+        local.parent.mkdir(parents=True)
+        local.write_text("# cached\n")
+        self.write("ideas/2026-11-03-a.md", IDEA + "[[cached-only]]\n"
+                   "[cached](../../work/.local/cache/cached-only.md)\n")
+        run(self.root, "git", "add", ".")
+        for found in (check(load_project(self.root)), check_git(self.root, staged=True)):
+            self.assertEqual({f.rule for f in found}, {"link", "local-link"})
+
     def test_staged_claude_rules_cannot_hide_behind_clean_worktree(self):
         self.commit()
         path = self.root / "CLAUDE.md"
@@ -83,6 +113,40 @@ class TestSnapshots(Base):
         self.assertIn("link", {f.rule for f in check_git(self.root, staged=True)})
         run(self.root, "git", "add", ".")
         self.assertEqual(check_git(self.root, staged=True), [])
+
+    def test_registered_ignored_assets_are_checked_at_the_original_location(self):
+        folder = self.root / "work/data/local"
+        folder.mkdir(parents=True)
+        (folder / "source.md").write_text("private source\n")
+        store = assets.Store(self.root, load_project(self.root).config)
+        assets.add(store, "work/data/local", "local", name="local", shareable=False)
+        self.write("ideas/2026-11-03-a.md", IDEA + "[source](../../work/data/local/source.md)\n")
+        run(self.root, "git", "add", ".")
+        index = (self.root / ".git/index").read_bytes()
+        self.assertEqual(check_git(self.root, staged=True), [])
+        self.assertEqual((self.root / ".git/index").read_bytes(), index)
+        (folder / "source.md").unlink()
+        self.assertIn("link", {f.rule for f in check_git(self.root, staged=True)})
+        folder.rmdir()
+        self.assertNotIn("asset-ignore", {f.rule for f in check_git(self.root, staged=True)})
+        (self.root / ".gitignore").write_text("work/.local/\n")
+        run(self.root, "git", "add", ".gitignore")
+        (self.root / ".gitignore").write_text("work/.local/\n/work/data/local/\n")
+        folder.mkdir()
+        (folder / "source.md").write_text("private source\n")
+        rules = {f.rule for f in check_git(self.root, staged=True)}
+        self.assertTrue({"asset-ignore", "link"} <= rules)
+
+    def test_relative_links_outside_repository_keep_the_original_base(self):
+        with tempfile.TemporaryDirectory(dir=self.root.parent) as tmp:
+            external = Path(tmp) / "source.md"
+            external.write_text("external source\n")
+            target = os.path.relpath(external, self.root / "docs/ideas")
+            self.write("ideas/2026-11-03-a.md", IDEA + f"[source]({target})\n")
+            run(self.root, "git", "add", ".")
+            self.assertEqual(check_git(self.root, staged=True), [])
+            external.unlink()
+            self.assertIn("link", {f.rule for f in check_git(self.root, staged=True)})
 
     def test_history_range_catches_rewrite_even_if_later_restored(self):
         p = self.final_note()

@@ -20,6 +20,8 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from keel import layout
+
 MANIFEST_NAME = "assets.toml"
 PERSONAL_CONFIG = Path(os.environ.get("KEEL_CONFIG", Path.home() / ".config" / "keel" / "config.toml"))
 KINDS = {
@@ -328,7 +330,10 @@ def add(store: Store, rel: str, kind: str, name: str | None = None, source: str 
         revision: str | None = None, command: str | None = None, shareable: bool = True) -> list[str]:
     if kind not in KINDS:
         raise AssetError(f"未知 kind {kind}；可选：{', '.join(KINDS)}")
-    path = (store.root / rel).resolve()
+    path = store.root / rel
+    if layout.is_local(store.root, path):
+        raise AssetError("正式资产不能登记在 work/.local/；先移到 work/ 下的所属目录，再登记")
+    path = path.resolve()
     rel = path.relative_to(store.root.resolve()).as_posix()
     if not path.exists():
         raise AssetError(f"不存在：{rel}")
@@ -378,6 +383,8 @@ def place(src: Path, dst: Path) -> None:
 
 def fetch_one(store: Store, name: str, entry: dict) -> tuple[str, str]:
     path = store.root / entry["path"]
+    if layout.is_local(store.root, path):
+        return "error", "正式资产不能存放在 work/.local/；先迁移文件并更新清单路径"
     if path.exists() and digest(path)[0] == entry["digest"]:
         return "ok", "已存在且校验一致"
     kind, source = entry["kind"], entry.get("source") or ""
@@ -470,11 +477,16 @@ def checks(root: Path, config: dict) -> list[tuple[str, str, str, str]]:
         if entry.get("kind") not in KINDS or not entry.get("digest") or not rel:
             out.append((MANIFEST_NAME, "asset-manifest", f"{name} 缺少 kind / path / digest", "error"))
             continue
+        if layout.is_local(root, root / rel):
+            out.append((rel, "asset-local", f"资产 {name} 位于可丢弃的 work/.local/；"
+                        "先迁移到 work/ 下的所属目录并更新清单路径", "error"))
         if entry.get("path_type") not in (None, "file", "directory"):
             out.append((MANIFEST_NAME, "asset-manifest", f"{name} 的 path_type 必须是 file 或 directory", "error"))
         if git_tracked(root, rel):
             out.append((rel, "asset-tracked", f"资产 {name} 的内容在 git 里；git rm -r --cached {rel}", "error"))
-        elif run("git", "check-ignore", "-q", rel, cwd=root, check=False).returncode != 0:
+        elif run("git", "check-ignore", "-q",
+                 rel.rstrip("/") + "/" if entry.get("path_type") == "directory" else rel,
+                 cwd=root, check=False).returncode != 0:
             out.append((rel, "asset-ignore", f"资产 {name} 的路径未被 .gitignore 忽略", "error"))
     limit = float(config.get("asset_max_mb", 5)) * 1024 * 1024
     listed = run("git", "ls-files", "-z", "--cached", cwd=root, check=False).stdout.split("\0")

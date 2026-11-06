@@ -432,18 +432,60 @@ def markdown_link_targets(text: str) -> list[str]:
     return targets
 
 
+def link_exists(project: Project, note: Note, target: str, registered: dict) -> bool:
+    """快照内的普通目标必须入树；登记的忽略资产和仓库外链接在原位置核验。"""
+    path = Path(os.path.abspath(note.path.parent / target))
+    if not project.history_root:
+        return path.exists()
+    original = Path(os.path.abspath(project.history_root / note.path.relative_to(project.root).parent / target))
+    if not original.is_relative_to(project.history_root):
+        return original.exists()
+    snapshot_path = project.root / original.relative_to(project.history_root)
+    if snapshot_path.exists():
+        return True
+    for entry in registered.values():
+        rel = entry.get("path", "")
+        asset_path = Path(os.path.abspath(project.history_root / rel))
+        if not rel or not asset_path.is_relative_to(project.history_root):
+            continue
+        if original != asset_path and not (entry.get("path_type") == "directory"
+                                          and original.is_relative_to(asset_path)):
+            continue
+        ignored = rel.rstrip("/") + "/" if entry.get("path_type") == "directory" else rel
+        if (assets.run("git", "check-ignore", "-q", ignored, cwd=project.root,
+                       check=False).returncode == 0
+                and original.resolve().is_relative_to(asset_path.resolve())):
+            return original.exists()
+    return False
+
+
 def check_links(project: Project, notes: list[Note]) -> list[Finding]:
-    names = {p.stem for p in project.root.rglob("*.md")} | {p.name for p in project.root.rglob("*")}
+    try:
+        registered = assets.Store(project.root, project.config).load()
+    except tomllib.TOMLDecodeError:
+        registered = {}  # assets.checks 单独报告清单格式错误。
+    paths = [Path(p) for p in layout.files(project.root)
+             if not layout.is_local(project.root, project.root / p)]
+    names = {p.stem for p in paths if p.suffix == ".md"} | {p.name for p in paths}
     out = []
     for note in notes:
         text = FENCE_RE.sub("", note.text)
         text = re.sub(r"`[^`\n]*`", "", text)
         for target in WIKILINK_RE.findall(text):
             target = target.strip()
-            if Path(target).name not in names and Path(target).stem not in names:
+            decoded = urllib.parse.unquote(target)
+            if any(layout.is_local(project.root, base / decoded)
+                   for base in (project.root, note.path.parent)):
+                out.append(Finding(display(project, note), "local-link",
+                                   f"[[{target}]] 依赖可丢弃的 work/.local/；先保存为正式资产或笔记附件"))
+            elif Path(target).name not in names and Path(target).stem not in names:
                 out.append(Finding(display(project, note), "link", f"[[{target}]] 指向不存在的笔记"))
         for target in markdown_link_targets(text):
-            if not (note.path.parent / target).exists():
+            path = note.path.parent / target
+            if layout.is_local(project.root, path):
+                out.append(Finding(display(project, note), "local-link",
+                                   f"链接 {target} 依赖可丢弃的 work/.local/；先保存为正式资产或笔记附件"))
+            elif not link_exists(project, note, target, registered):
                 out.append(Finding(display(project, note), "link", f"链接 {target} 指向不存在的文件"))
     return out
 
@@ -683,15 +725,17 @@ def init_project(root: Path, prefix: str | None = None, commit: bool = False, gi
             agents.write_text(text.rstrip() + "\n\n- " + entrypoints.SKILL_CAPTURE_RULE
                               + "提炼与验收按已有工作模式入口执行。\n")
             done.append("AGENTS.md 已补充 skill 与常见错误处理方法的提炼约定")
+        text = agents.read_text()
+        if (updated := entrypoints.with_knowledge_rule(text)) != text:
+            agents.write_text(updated)
+            done.append("AGENTS.md 已补充知识收尾约定")
     if (root / ".agents/skills/beads/SKILL.md").is_file():
         agents = root / "AGENTS.md"
         text = agents.read_text()
         if ".agents/skills/beads/SKILL.md" not in text:
             agents.write_text(text.rstrip() + "\n\n" + entrypoints.BEADS_POINTER + "\n")
             done.append("AGENTS.md 已指向 beads skill")
-        text = agents.read_text()
-        if entrypoints.GIT_AUTHORITY not in text:
-            agents.write_text(text.rstrip() + "\n\n" + entrypoints.GIT_AUTHORITY + "\n")
+    done += entrypoints.install_git_authority(root)
     done += install_obsidian_templates(root)
     done += skills.sync(root, tomllib.loads(config.read_text()), __version__) or ["共享 skill 已是最新"]
     done += secrets.init(root, tomllib.loads(config.read_text()))
@@ -703,6 +747,9 @@ def init_project(root: Path, prefix: str | None = None, commit: bool = False, gi
     if commit and (root / assets.MANIFEST_NAME).exists():
         done.append("有资产清单：需要时运行 keel fetch 取回大文件")
     return done
+
+
+LOCAL_START = "开始项目工作时运行 `keel local sweep --daily`；运行产物的生命周期与收尾按 Keel skill 执行。"
 
 
 AGENTS_POINTER = ("本项目使用 Keel 工作流（命令 `keel`，说明见 `.agents/skills/keel/SKILL.md`；不是 keel.sh）。"
@@ -726,10 +773,13 @@ def install_agents_pointer(root: Path) -> list[str]:
     path = root / "AGENTS.md"
     text = path.read_text() if path.exists() else "# AGENTS.md\n"
     if ".agents/skills/keel/SKILL.md" in text:
+        if LOCAL_START not in text:
+            path.write_text(text.rstrip() + "\n\n" + LOCAL_START + "\n")
+            return ["AGENTS.md 已接入每日运行产物检查"]
         return []
     lines = text.splitlines()
     at = 1 if lines and lines[0].startswith("# ") else 0
-    lines[at:at] = ["", AGENTS_POINTER]
+    lines[at:at] = ["", AGENTS_POINTER, "", LOCAL_START]
     path.write_text("\n".join(lines).rstrip("\n") + "\n")
     return ["AGENTS.md 已指向 keel skill"]
 
@@ -869,6 +919,21 @@ def main(argv: list[str] | None = None) -> int:
     p_new.add_argument("--cause", help="incident：原因标签，用于发现重复问题")
     sub.add_parser("types", help="列出笔记类型")
     sub.add_parser("status", help="当前情况：进行中与阻塞的任务、里程碑、最近的记录和标签")
+    p_local = sub.add_parser("local", help="查看运行产物大小，按保留期显式清理指定目录")
+    lsub = p_local.add_subparsers(dest="local_cmd", required=True)
+    lsub.add_parser("status", help="按一级条目显示 work/.local/ 文件大小")
+    p_sweep = lsub.add_parser("sweep", help="自动回收已到期且声明可丢弃的运行，提醒未知内容和容量")
+    p_sweep.add_argument("--daily", action="store_true", help="同一本地日最多执行一次")
+    p_run = lsub.add_parser("run", help="新建运行目录或更新生命周期状态")
+    p_run.add_argument("path")
+    p_run.add_argument("--pid", type=int, help="运行进程或监督进程 PID；默认调用者父进程")
+    p_run.add_argument("--reason", help="保留原因")
+    p_run.add_argument("--review-on", help="保留复查日期 YYYY-MM-DD")
+    p_run.add_argument("state", choices=["running", "completed", "disposable", "retained"])
+    p_clean = lsub.add_parser("clean", help="预览清理指定运行产物，默认保留完成后的 30 天")
+    p_clean.add_argument("paths", nargs="+", help="相对 work/.local/ 的任务或运行路径")
+    p_clean.add_argument("--older-than", type=int, default=None, metavar="DAYS", help="只清理早于此天数的内容")
+    p_clean.add_argument("--apply", action="store_true", help="显式执行；跳过 .keep/.active 标记及近期修改")
     p_secret = sub.add_parser("secret", help="共享密钥：只存一份，项目按需注入（基于 fnox + age）")
     ssub = p_secret.add_subparsers(dest="secret_cmd", required=True)
     p_sset = ssub.add_parser("set", help="从标准输入保存或更新一把共享密钥；--note 写说明（归属、用途）")
@@ -928,6 +993,27 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(secrets.inventory()))
         return 0
     project = load_project(Path.cwd())
+    if args.cmd == "local":
+        from keel import runtime
+        if args.local_cmd == "sweep":
+            lines = runtime.sweep(project.root, project.config, args.daily)
+        elif args.local_cmd == "run":
+            lines = runtime.transition(project.root, args.path, args.state, args.pid, args.reason, args.review_on)
+        elif args.local_cmd == "status":
+            lines = runtime.status(project.root)
+        else:
+            days, _ = runtime.policy(project.config)
+            lines = runtime.clean(project.root, args.paths, days if args.older_than is None else args.older_than, args.apply)
+        print("\n".join(lines))
+        return 0
+    if args.cmd in ("check", "status"):
+        from keel import runtime
+        try:
+            maintenance = runtime.sweep(project.root, project.config, daily=True)
+        except (runtime.LocalError, OSError) as error:
+            maintenance = [f"运行产物检查未执行：{error}"]
+        for line in maintenance:
+            print(line, file=sys.stderr)
     if args.cmd == "types":
         for name, spec in project.types.items():
             print(f"{name:10} {NOTES_ROOT}/{spec['dir']:12} {spec['question']}")
@@ -940,7 +1026,10 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(status.render(status.load_issues(root), notes, status.load_tags(root))))
         return 0
     if args.cmd == "sync":
-        print("\n".join(skills.sync(project.root, project.config, __version__, args.force)) or "共享 skill 已是最新")
+        done = skills.sync(project.root, project.config, __version__, args.force)
+        if "keel" in project.config.get("skills", []):
+            done += install_agents_pointer(project.root)
+        print("\n".join(done) or "共享 skill 已是最新")
         return 0
     if args.cmd == "skills":
         for name, path in skills.bundled().items():

@@ -2,6 +2,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from keel import layout
 
@@ -14,6 +15,7 @@ class TestLayout(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.put("keel.toml", "")
         self.put("docs/x.md", "")
+        self.put(".gitignore", "work/.local/\n")
 
     def put(self, rel, text="x\n"):
         path = self.root / rel
@@ -37,7 +39,7 @@ class TestLayout(unittest.TestCase):
     def test_root_allows_only_fixed_entries(self):
         self.put("output/run.log")
         self.put("build.sh")
-        self.put(".gitignore", "ignored/\n")
+        self.put(".gitignore", "work/.local/\nignored/\n")
         self.put("ignored/big.bin")
         self.assertEqual(self.found(), {("output", "layout-root"), ("build.sh", "layout-root")})
 
@@ -72,6 +74,52 @@ class TestLayout(unittest.TestCase):
         self.good_work()
         self.put("work/.local/tmp/output/x")
         self.assertEqual(self.found(), set())
+
+    def test_local_ignore_must_come_from_project_and_exclude_the_directory(self):
+        for rules in ("", "work/.local/*\n", "work/.local/\n!work/.local/\n"):
+            with self.subTest(rules=rules):
+                self.put(".gitignore", rules)
+                self.assertIn((".gitignore", "local-ignore"), self.found())
+        self.put(".gitignore", "")
+        self.put(".git/info/exclude", "work/.local/\n")
+        self.assertIn((".gitignore", "local-ignore"), self.found())
+        self.put(".gitignore", "/work/.local/\n")
+        self.assertNotIn((".gitignore", "local-ignore"), self.found())
+
+    def test_forced_tracked_local_files_are_rejected_even_if_deleted_from_worktree(self):
+        self.put("work/.local/run.log")
+        subprocess.run(["git", "add", "-f", "work/.local/run.log"], cwd=self.root, check=True)
+        for exists in (True, False):
+            with self.subTest(exists=exists):
+                if not exists:
+                    (self.root / "work/.local/run.log").unlink()
+                self.assertIn(("work/.local/run.log", "local-tracked"), self.found())
+
+    def test_ignored_tool_default_directories_are_allowed(self):
+        self.good_work()
+        self.put(".gitignore", "work/.local/\nnode_modules/\n__pycache__/\n.venv/\n")
+        for path in ("work/app/node_modules/pkg/index.js", "work/app/__pycache__/main.pyc",
+                     "work/.venv/bin/python"):
+            self.put(path)
+        self.assertEqual(self.found(), set())
+
+    def test_non_git_file_scan_prunes_runtime_directory(self):
+        self.put("work/.local/cache/cached-only.md")
+        self.put("work/app/README.md")
+        visited = []
+        import os
+        walk = os.walk
+
+        def recording_walk(*args, **kwargs):
+            for parent, dirs, names in walk(*args, **kwargs):
+                visited.append(Path(parent))
+                yield parent, dirs, names
+
+        with patch.object(layout.subprocess, "run", side_effect=FileNotFoundError), \
+                patch.object(layout.os, "walk", side_effect=recording_walk):
+            paths = layout.files(self.root)
+        self.assertIn("work/app/README.md", paths)
+        self.assertFalse(any(".local" in p.parts for p in visited))
 
 
 class TestVerify(unittest.TestCase):

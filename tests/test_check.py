@@ -24,6 +24,7 @@ class Base(unittest.TestCase):
         (self.root / "keel.toml").write_text('ignore = ["sources/*"]\n')
         (self.root / "AGENTS.md").write_text("# AGENTS.md\n")
         (self.root / "CLAUDE.md").write_text("@AGENTS.md\n")
+        (self.root / ".gitignore").write_text("work/.local/\n")
         personal = self.root.parent / f"{self.root.name}-personal.toml"
         personal.write_text('hf_namespace = "me"\ngh_owner = "me"\n')
         self._personal, assets.PERSONAL_CONFIG = assets.PERSONAL_CONFIG, personal
@@ -220,6 +221,25 @@ class TestRules(Base):
                                                   "[[missing]] `[[code]]` [w](https://x)\n")
         self.write("ideas/2026-11-03-b.md", IDEA)
         self.assertEqual(self.rules(), [("link", "error"), ("link", "error")])
+
+    def test_explicit_runtime_links_are_rejected_even_when_basename_exists_elsewhere(self):
+        self.write("ideas/2026-11-03-a.md", IDEA + "[[work/.local/README]]\n"
+                   "[missing](../../work/%2Elocal/missing.md)\n[alias](../../.cached-alias)\n")
+        (self.root / "README.md").write_text("# actual project\n")
+        local = self.root / "work/.local/README.md"
+        local.parent.mkdir(parents=True)
+        local.write_text("cache\n")
+        (self.root / ".cached-alias").symlink_to(local)
+        self.assertEqual(self.rules(), [("local-link", "error")] * 3)
+
+    def test_ignored_tool_files_cannot_satisfy_wikilinks(self):
+        ignore = self.root / ".gitignore"
+        ignore.write_text(ignore.read_text() + "node_modules/\n")
+        cached = self.root / "work/node_modules/pkg/cached-only.md"
+        cached.parent.mkdir(parents=True)
+        cached.write_text("cache\n")
+        self.write("ideas/2026-11-03-a.md", IDEA + "[[cached-only]]\n")
+        self.assertEqual(self.rules(), [("link", "error")])
 
     def test_incident_repeat_warns(self):
         for i in range(3):

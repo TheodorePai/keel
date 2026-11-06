@@ -2,18 +2,27 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
 
 WORK = "work"
-LOCAL = ".local"   # work/.local/：运行产物唯一出口，不进 Git
+LOCAL = ".local"   # work/.local/：允许丢失的主动运行产物，不进 Git
+LOCAL_PATH = f"{WORK}/{LOCAL}"
 ROOT_ALLOWED = {"AGENTS.md", "CLAUDE.md", "README.md", "LICENSE", "keel.toml", "keel.lock",
                 "fnox.toml", "assets.toml", "docs", WORK, "_keel"}
 BANNED = {"tmp", "temp", "output", "outputs", "misc", "old", "new", "backup", "bak",
           "archive", "final", "copy"}
 BANNED_SUFFIX = re.compile(r"[-_](v\d+|final|old|bak|copy|\d{4}-?\d{2}-?\d{2})$", re.I)
 LINK = re.compile(r"\]\(\s*(?:\./)?([^)\s/#:]+)/")
+
+
+def is_local(root: Path, path: Path) -> bool:
+    """同时识别直接路径和指向运行目录的软链接（含尚不存在的目标）。"""
+    local = root.resolve() / LOCAL_PATH
+    return (Path(os.path.abspath(path)).is_relative_to(local)
+            or path.resolve().is_relative_to(local.resolve()))
 
 
 def files(root: Path) -> list[str]:
@@ -23,12 +32,35 @@ def files(root: Path) -> list[str]:
                               "--exclude-standard"], capture_output=True, text=True, check=True).stdout
         return [p for p in out.split("\0") if p and (root / p).exists()]
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return [p.relative_to(root).as_posix() for p in root.rglob("*")
-                if p.is_file() and ".git" not in p.relative_to(root).parts]
+        paths = []
+        for parent, dirs, names in os.walk(root):
+            dirs[:] = [d for d in dirs if d != ".git" and not is_local(root, Path(parent) / d)]
+            paths += [(Path(parent) / n).relative_to(root).as_posix() for n in names
+                      if (Path(parent) / n).is_file()]
+        return paths
+
+
+def check_local(root: Path) -> list[tuple[str, str, str, str]]:
+    out = []
+    tracked = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--", LOCAL_PATH],
+                             capture_output=True, text=True)
+    for path in filter(None, tracked.stdout.split("\0")):
+        out.append((path, "local-tracked", "运行产物不能进入 Git；保留本机文件并用 "
+                    f"git rm --cached -- {path} 移出暂存跟踪", "error"))
+    # 要求目录规则；仅忽略内容的通配符仍可被后续反向规则穿透。
+    # 不接受全局忽略或 .git/info/exclude：克隆和暂存快照必须能得到同样的保护。
+    ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "--no-index", "-z", "-v", "--stdin"],
+                             input=LOCAL_PATH + "/\0", capture_output=True, text=True)
+    fields = ignored.stdout.split("\0")
+    if not (ignored.returncode == 0 and len(fields) >= 4
+            and fields[0] == ".gitignore" and fields[2] in (LOCAL_PATH + "/", "/" + LOCAL_PATH + "/")):
+        out.append((".gitignore", "local-ignore", f"项目必须忽略整个 {LOCAL_PATH}/；"
+                    "运行 keel init 补齐规则，并移除覆盖它的反向规则", "error"))
+    return out
 
 
 def checks(root: Path, config: dict) -> list[tuple[str, str, str, str]]:
-    out = []
+    out = check_local(root)
     paths = files(root)
     for name in sorted({p.split("/")[0] for p in paths}):
         if not name.startswith(".") and name not in ROOT_ALLOWED:
@@ -74,7 +106,7 @@ def check_map(root: Path, dirs: list[str]) -> list[tuple[str, str, str, str]]:
 
 WORK_README = """# work
 
-项目本身：源码、数据、配置和正式交付物。做过什么记在 `../docs/` 和 Beads，运行产物写 `.local/`（不进 Git）。
+项目本身：源码、数据、配置和正式交付物。做过什么记在 `../docs/` 和 Beads；允许丢失的主动运行产物写 `.local/`（不进 Git）。工具管理的依赖和缓存可保留默认位置并忽略。
 
 每个一级目录一行，链接到它自己的 README：
 

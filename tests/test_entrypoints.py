@@ -12,6 +12,47 @@ from tests.test_check import Base, run
 
 
 class TestEntrypointProtection(Base):
+    def test_file_only_init_installs_git_policy_without_beads_and_is_idempotent(self):
+        cli.init_project(self.root)
+        agents = self.root / "AGENTS.md"
+        original = agents.read_text()
+        self.assertFalse((self.root / ".agents/skills/beads/SKILL.md").exists())
+        self.assertIn(entrypoints.GIT_AUTHORITY, original)
+        cli.init_project(self.root)
+        self.assertEqual(agents.read_text(), original)
+
+    def test_init_replaces_old_git_defaults_in_place_and_keeps_project_rules(self):
+        agents = self.root / "AGENTS.md"
+        for old in entrypoints.LEGACY_GIT_AUTHORITIES:
+            with self.subTest(old=old):
+                agents.write_text(f"# AGENTS.md\n\n- {old}\n- 项目只允许推送到指定分支。\n")
+                cli.init_project(self.root)
+                updated = agents.read_text()
+                self.assertIn("- " + entrypoints.GIT_AUTHORITY, updated)
+                self.assertNotIn(old, updated)
+                self.assertIn("- 项目只允许推送到指定分支。\n", updated)
+                cli.init_project(self.root)
+                self.assertEqual(agents.read_text(), updated)
+
+    def test_git_policy_preserves_custom_restrictions_examples_and_comments(self):
+        old = entrypoints.LEGACY_GIT_AUTHORITIES[1]
+        original = (f"# AGENTS.md\n\n本项目{old}\n\n"
+                    f"```md\n{old}\n```\n\n~~~md\n{old}\n~~~\n\n"
+                    f"<!--\n{old}\n-->\n")
+        updated = entrypoints.with_git_authority(original)
+        self.assertTrue(updated.startswith(original))
+        self.assertEqual(updated.count(entrypoints.GIT_AUTHORITY), 1)
+        self.assertEqual(entrypoints.with_git_authority(updated), updated)
+
+    def test_git_policy_removes_duplicate_old_defaults_when_current_policy_exists(self):
+        original = ("# AGENTS.md\n\n" + entrypoints.LEGACY_GIT_AUTHORITIES[0] + "\n\n"
+                    + entrypoints.GIT_AUTHORITY + "\n\n" + entrypoints.LEGACY_GIT_AUTHORITIES[1] + "\n")
+        updated = entrypoints.with_git_authority(original)
+        self.assertEqual(updated.count(entrypoints.GIT_AUTHORITY), 1)
+        for old in entrypoints.LEGACY_GIT_AUTHORITIES:
+            self.assertNotIn(old, updated)
+        self.assertEqual(entrypoints.with_git_authority(updated), updated)
+
     def test_entrypoint_links_ignore_examples_and_check_actual_local_targets(self):
         agents = self.root / "AGENTS.md"
         agents.write_text('# AGENTS.md\n\n[Reference](docs/missing.md)\n'
@@ -99,7 +140,7 @@ class TestRealBeadsEntrypoints(Base):
         self.assertNotIn("BEGIN BEADS", agents)
         self.assertEqual(agents.count(".agents/skills/keel/SKILL.md"), 1)
         self.assertEqual(agents.count(".agents/skills/beads/SKILL.md"), 1)
-        self.assertIn("Git 提交、推送和 Dolt 远端同步须有", agents)
+        self.assertEqual(agents.count(entrypoints.GIT_AUTHORITY), 1)
         self.assertIn(entrypoints.WORK_MODE_TARGET, cli.markdown_link_targets(agents))
         self.assertTrue((root / entrypoints.WORK_MODE_TARGET).is_file())
         self.assertTrue((root / ".agents/skills/beads/SKILL.md").is_file())

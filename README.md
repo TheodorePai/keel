@@ -38,6 +38,7 @@ keel fetch    # 需要时取回大文件
 | `keel init [--github]` | 新建项目，或在新机器上恢复项目 |
 | `keel new` / `types` / `check` | 按类型写笔记，提交前检查结构 |
 | `keel status` | 查看进行中、阻塞的任务和里程碑 |
+| `keel local status` / `clean` | 查看运行产物大小，预览或显式清理指定路径 |
 | `keel asset` / `fetch` | 登记与取回大文件 |
 | `keel secret` | 声明密钥，运行时注入（值存放在 fnox） |
 | `keel sync` / `skills` | 装入共享 skill |
@@ -54,7 +55,8 @@ keel fetch    # 需要时取回大文件
 ```
 
 项目根目录的 `CLAUDE.md` 只保留一行 `@AGENTS.md`，项目规则统一写在 `AGENTS.md`，避免重复和冲突。
-`AGENTS.md` 同时简短引用 `.agents/skills/beads/SKILL.md`；完整任务流程由该 skill 和 `bd prime` 提供。Git 提交、推送及 Dolt 远端同步仍遵循用户和项目的授权。
+`AGENTS.md` 同时简短引用 `.agents/skills/beads/SKILL.md`；完整任务流程由该 skill 和 `bd prime` 提供。默认在完成可验证里程碑且项目检查通过后，主动进行本地 Git 提交，只包含当前任务的改动。Git 推送和 Dolt 远端同步沿用用户、上层指令或项目规则的已有授权；未约定目标或范围时再确认，已有授权无需重复确认。用户或项目的额外限制仍须遵守。
+重复运行 `keel init` 会原位更新独立的已知旧默认授权条款，保留项目自定义规则、代码示例和注释；不会把新旧默认条款叠加。即使使用 `--no-commit` 仅准备文件，也会写入该默认约定。
 `keel init` 补齐缺失的入口，并自动迁移已核实的 Beads 1.3.2 默认模板，保留 `AGENTS.md` 中的项目规则。未知或改过的生成块、`CLAUDE.md` 的额外规则会在初始化前被拦截，保留原文并提示手动迁移。
 `keel check` 和提交前的暂存检查会拦截缺失入口、额外内容及不存在的导入目标。
 
@@ -65,6 +67,7 @@ keel fetch    # 需要时取回大文件
 
 - [keel](keel/README.md)：`keel` 命令的 Python 包，连同随包分发的模板、笔记类型和共享 skill
 - [tests](tests/README.md)：单元测试，`python3 -m unittest discover -s tests -t .`
+- [moi](moi/README.md)：可选的本地人用工作台，读取项目情况并提供固定快捷操作
 
 ## 许可证
 

@@ -1,3 +1,4 @@
+import re
 import os
 import tomllib
 
@@ -64,6 +65,26 @@ class TestSkills(Base):
         self.assertIn(entrypoints.SKILL_CAPTURE_RULE, updated)
         init_project(self.root)
         self.assertEqual(agents.read_text(), updated)
+
+    def test_init_adds_knowledge_rule_after_skill_capture_and_keeps_rules(self):
+        agents = self.root / "AGENTS.md"
+        text = agents.read_text().replace("\n- " + entrypoints.KNOWLEDGE_RULE, "")
+        agents.write_text(text + "\n## Project policy\nKeep releases private.\n")
+        self.assertNotIn(entrypoints.KNOWLEDGE_RULE, agents.read_text())
+        init_project(self.root)
+        updated = agents.read_text()
+        lines = updated.splitlines()
+        at = next(i for i, l in enumerate(lines) if entrypoints.SKILL_CAPTURE_RULE in l)
+        self.assertIn(entrypoints.KNOWLEDGE_RULE, lines[at + 1])
+        self.assertIn("Keep releases private.", updated)
+        self.assertTrue((self.root / ".agents/skills/keel/references/knowledge-upkeep.md").is_file())
+        init_project(self.root)
+        self.assertEqual(agents.read_text(), updated)
+
+    def test_version_lag_between_lock_and_installed_keel_warns(self):
+        lock = self.root / "keel.lock"
+        lock.write_text(re.sub(r'keel_version = "[^"]*"', 'keel_version = "0.0.1"', lock.read_text()))
+        self.assertIn(("keel.lock", "keel-version"), self.rules())
 
     def test_local_edit_is_flagged_and_not_overwritten(self):
         skill = self.root / ".agents/skills/keel/SKILL.md"
