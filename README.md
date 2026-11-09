@@ -69,6 +69,10 @@ keel fetch    # 需要时取回大文件
 - [tests](tests/README.md)：单元测试，`python3 -m unittest discover -s tests -t .`
 - [moi](moi/README.md)：可选的本地人用工作台，读取项目情况并提供固定快捷操作
 
+## 贡献
+
+提交问题、PR 和 CI 检查的范围见 [贡献说明](CONTRIBUTING.md)。
+
 ## 许可证
 
 [MIT](LICENSE)。内置的第三方 Obsidian 插件和主题遵循各自的许可证，见 [THIRD_PARTY.md](THIRD_PARTY.md)。
