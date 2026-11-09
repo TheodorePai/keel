@@ -2,6 +2,7 @@ import os
 import sys
 import contextlib
 import io
+import json
 import shutil
 import subprocess
 import tempfile
@@ -10,12 +11,80 @@ import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
-from keel import secrets
+from keel import secrets, _secret_permissions
 from keel.cli import check, init_project, load_project, main
 from keel.snapshots import check_git
 from tests.test_check import Base, run
 
 HAVE_FNOX = bool(shutil.which("fnox") and shutil.which("age-keygen"))
+
+
+class TestPrivateKeyPermissions(Base):
+    def setUp(self):
+        super().setUp()
+        self.cfg = self.root / "加密 keys 😀 # 'quoted'"
+        self.cfg.mkdir()
+        patcher = patch.object(secrets, "config_dir", return_value=self.cfg)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_setup_writes_valid_toml_and_keeps_existing_tables_and_key(self):
+        key = secrets.key_file()
+        key.write_text("nonsecret fixture")
+        config = secrets.global_config()
+        config.write_text("[custom]\nkeep = true\n")
+        with patch.object(secrets.shutil, "which", return_value="fixture-age-keygen"), \
+                patch.object(secrets.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "age1fixture\n", "")):
+            secrets.setup()
+            first = config.read_bytes()
+            self.assertEqual(secrets.setup(), [])
+            self.assertEqual(config.read_bytes(), first)
+        data = tomllib.loads(config.read_text())
+        self.assertEqual(data["providers"]["age"]["key_file"], str(key))
+        self.assertTrue(data["custom"]["keep"])
+        self.assertEqual(key.read_text(), "nonsecret fixture")
+        self.assertTrue(_secret_permissions.private_key(key))
+
+    def test_doctor_rejects_broadened_key_permissions(self):
+        key = secrets.key_file()
+        key.write_text("nonsecret fixture")
+        _secret_permissions.protect(key)
+        def doctor():
+            with patch.object(secrets.shutil, "which", return_value="fixture-fnox"), \
+                    patch.object(secrets, "shared_names", return_value={"K"}), \
+                    patch.object(secrets, "fnox", return_value=subprocess.CompletedProcess([], 0, "", "")):
+                return next(ok for ok, message in secrets.doctor(self.root, {"secrets": ["K"]})
+                            if message.startswith("age 私钥"))
+        self.assertTrue(doctor())
+        if os.name == "nt":
+            # Independently broaden the real ACL with the operating system CLI.
+            subprocess.run(["icacls", str(key), "/grant", "*S-1-1-0:(R)"],
+                           check=True, capture_output=True)
+        else:
+            key.chmod(0o644)
+        self.assertFalse(_secret_permissions.private_key(key))
+        self.assertFalse(doctor())
+
+
+if os.name == "nt":
+    class TestWindowsKeyPermissions(Base):
+        def test_symlinks_and_hardlinks_are_not_secured_or_accepted(self):
+            outside = self.root / "outside"
+            outside.write_text("keep")
+            for name, create in (("link", lambda path: path.symlink_to(outside)),
+                                 ("hardlink", lambda path: os.link(outside, path))):
+                path = self.root / name
+                create(path)
+                with self.subTest(name=name), self.assertRaises(OSError):
+                    _secret_permissions.protect(path)
+                self.assertFalse(_secret_permissions.private_key(path))
+                self.assertEqual(outside.read_text(), "keep")
+
+        def test_access_denied_does_not_report_a_private_key(self):
+            key = self.root / "age.txt"
+            key.write_text("nonsecret fixture")
+            with patch.object(_secret_permissions, "_get_security", return_value=5):
+                self.assertFalse(_secret_permissions.private_key(key))
 
 
 class TestSecretScan(Base):
@@ -161,7 +230,7 @@ class TestProjectReferences(Base):
 class TestSecretsWithFnox(Base):
     def setUp(self):
         super().setUp()
-        self.cfg = Path(tempfile.mkdtemp())
+        self.cfg = Path(tempfile.mkdtemp(prefix="keel secrets 中文 😀 "))
         self.addCleanup(shutil.rmtree, self.cfg)
         old = os.environ.get("FNOX_CONFIG_DIR")
         os.environ["FNOX_CONFIG_DIR"] = str(self.cfg)
@@ -171,14 +240,16 @@ class TestSecretsWithFnox(Base):
                         else os.environ.pop("FNOX_CONFIG_DIR", None))
 
     def env_of(self, project):
-        out = subprocess.run(["fnox", "exec", "--", "env"], cwd=project, capture_output=True, text=True,
+        out = subprocess.run(["fnox", "exec", "--", sys.executable, "-c",
+                              "import json, os; print(json.dumps(dict(os.environ)))"],
+                             cwd=project, capture_output=True, text=True,
                              stdin=subprocess.DEVNULL)
-        return dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line), out.returncode
+        return (json.loads(out.stdout) if out.returncode == 0 else {}), out.returncode
 
     def test_shared_once_injected_on_demand(self):
         secrets.set_secret("OPENAI_API_KEY", "FAKE-openai")
         secrets.set_secret("HUOSHAN_API_KEY", "FAKE-huoshan")
-        self.assertEqual(oct(secrets.key_file().stat().st_mode & 0o777), "0o600")
+        self.assertTrue(_secret_permissions.private_key(secrets.key_file()))
         self.assertNotIn("FAKE", secrets.global_config().read_text())
         cfg = self.root / "keel.toml"
         cfg.write_text(cfg.read_text() + 'secrets = ["OPENAI_API_KEY", "LLM_KEY=HUOSHAN_API_KEY"]\n')

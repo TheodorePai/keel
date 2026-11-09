@@ -9,3 +9,5 @@
 完整 GitHub 门禁与贡献方式见 [贡献说明](../CONTRIBUTING.md)。
 
 `test_release.py` 验证每日发版的版本选择、积压 PR 检测、无更新跳过、发布来源与版本快照、安装包版本及摘要，以及已发布版本重试时不重复写入。Git 测试使用本地临时仓库，GitHub 写操作使用替身；真实云端发布由 `.github/workflows/release.yml` 验收。
+
+Windows secrets 集成任务安装校验 SHA-256 的原生 fnox 1.46.0 与 age 1.3.2，运行整个 secrets 测试模块并拒绝跳过。测试使用隔离配置目录和模拟值，覆盖中文/空格/非 BMP 路径、真实环境注入、轮换、导入冲突，以及 Windows ACL 放宽后的诊断。跨平台任务另行运行不依赖外部工具的配置与权限回归；POSIX 保留 0600 要求。

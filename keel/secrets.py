@@ -17,12 +17,16 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+from keel import _secret_permissions
+
 PREFIX = "SHARED_"
 FNOX_FILE = "fnox.toml"
 PROJECT_HEADER = "# 由 keel init 按 keel.toml 的 secrets 生成"
 MANAGED_BEGIN = "# --- BEGIN KEEL SECRETS ---"
 MANAGED_END = "# --- END KEEL SECRETS ---"
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+INSTALL_HINT = ("安装 fnox 和 age（含 age-keygen），并将命令加入 PATH"
+                if os.name == "nt" else "brew install fnox age")
 ENV_IGNORE = [".env", ".env.*", "!.env.example", "!.env.sample", "!.env.template"]
 SECRET_PATTERNS = [
     ("OpenAI 类密钥", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}")),
@@ -52,7 +56,7 @@ def key_file() -> Path:
 
 def fnox(*args: str, cwd: Path | None = None, stdin: str | None = None) -> subprocess.CompletedProcess:
     if not shutil.which("fnox"):
-        raise SecretError("需要 fnox 与 age：brew install fnox age")
+        raise SecretError(f"需要 fnox 与 age：{INSTALL_HINT}")
     return subprocess.run(["fnox", *args], cwd=cwd, input=stdin, capture_output=True, text=True)
 
 
@@ -160,28 +164,30 @@ def shared_names() -> set[str]:
 def setup() -> list[str]:
     """首次在本机建立 age 密钥与 fnox 全局配置；已存在则不动。"""
     path, key = global_config(), key_file()
-    if path.exists() and "age" in tomllib.loads(path.read_text()).get("providers", {}):
+    if path.exists() and "age" in tomllib.loads(path.read_text(encoding="utf-8")).get("providers", {}):
         return []
     if not shutil.which("age-keygen"):
-        raise SecretError("需要 age：brew install age")
+        raise SecretError(f"需要 age-keygen：{INSTALL_HINT}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o700)
+    _secret_permissions.protect(path.parent, directory=True)
     done = []
     if not key.exists():
         subprocess.run(["age-keygen", "-o", str(key)], capture_output=True, check=True)
         done.append(f"生成 age 私钥 {key}（务必备份：丢失后所有密钥无法解开）")
-    os.chmod(key, 0o600)
+    _secret_permissions.protect(key)
     public = subprocess.run(["age-keygen", "-y", str(key)], capture_output=True, text=True, check=True).stdout.strip()
     header = ("# fnox 全局配置（由 keel 建立）。共享密钥以 SHARED_ 前缀存放并设 env = false，\n"
               "# 只有在项目 fnox.toml 中声明的才会注入。\n")
-    body = f'default_provider = "age"\n\n[providers.age]\ntype = "age"\nrecipients = ["{public}"]\nkey_file = "{key}"\n'
+    body = (f'default_provider = "age"\n\n[providers.age]\ntype = "age"\n'
+            f'recipients = [{json.dumps(public, ensure_ascii=False)}]\n'
+            f'key_file = {json.dumps(str(key), ensure_ascii=False)}\n')
     if path.exists():
-        existing = path.read_text()
+        existing = path.read_text(encoding="utf-8")
         if "[providers.age]" in existing:
             return done
-        path.write_text(header + body + "\n" + existing)
+        path.write_text(header + body + "\n" + existing, encoding="utf-8")
     else:
-        path.write_text(header + body)
+        path.write_text(header + body, encoding="utf-8")
     return done + [f"写入 fnox 全局配置 {path}"]
 
 
@@ -332,7 +338,7 @@ def init(root: Path, config: dict) -> list[str]:
     if not names:
         return done
     if not shutil.which("fnox"):
-        return done + ["声明了 secrets 但未安装 fnox：brew install fnox age，然后重新运行 keel init"]
+        return done + [f"声明了 secrets 但未安装 fnox：{INSTALL_HINT}，然后重新运行 keel init"]
     done += setup()
     register(root)
     have = shared_names()
@@ -391,13 +397,14 @@ def doctor(root: Path, config: dict) -> list[tuple[bool, str]]:
     names = declared(config)
     if not names:
         return [(True, "未声明 secrets")]
-    lines = [(bool(shutil.which("fnox")), "fnox 已安装" if shutil.which("fnox") else "fnox 未安装：brew install fnox age")]
+    lines = [(bool(shutil.which("fnox")), "fnox 已安装" if shutil.which("fnox") else f"fnox 未安装：{INSTALL_HINT}")]
     if not shutil.which("fnox"):
         return lines
     key = key_file()
     if key.exists():
-        mode = key.stat().st_mode & 0o777
-        lines.append((mode == 0o600, f"age 私钥 {key}" + ("" if mode == 0o600 else f" 权限 {oct(mode)}，应为 600")))
+        private = _secret_permissions.private_key(key)
+        expected = "Windows ACL 仅允许当前用户和 SYSTEM，且禁用继承" if os.name == "nt" else "权限应为 600"
+        lines.append((private, f"age 私钥 {key}" + ("" if private else f" 权限不符合要求：{expected}")))
     else:
         lines.append((False, f"缺少 age 私钥 {key}：新机器从备份复制，或运行 keel init 新建"))
     have = shared_names()

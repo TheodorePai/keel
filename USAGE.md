@@ -55,6 +55,8 @@ keel fetch
 
 将克隆地址替换为自己的项目。`keel init` 取回任务库、启用钩子并生成本机 Obsidian 模板；`keel fetch` 在需要时按资产清单取回并校验大文件。使用共享密钥的项目还需要在新机器上配置 fnox 与 age；Git 克隆不会取回密钥值或 age 私钥。
 
+密钥功能需要本机安装 `fnox` 和 age 提供的 `age-keygen`，并加入 PATH；支持 Windows 原生命令。新建 age 私钥时，POSIX 使用 `0600` 权限，Windows 使用仅允许当前用户和 SYSTEM 的受保护 ACL；`keel doctor` 按各平台规则检查。已有 age 配置和私钥不会被重新生成，诊断发现权限问题时先核查已有文件。
+
 在 Obsidian 中使用“打开文件夹作为库”选择项目根目录，可查看任务面板和笔记视图。
 
 ## Agent 入口与工作约定
