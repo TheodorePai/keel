@@ -113,7 +113,7 @@ class TestEntrypointProtection(Base):
                           '<!-- [Commented out](docs/comment.md) -->\n')
         found = [f for f in cli.check(cli.load_project(self.root)) if f.rule == "agent-entrypoint-link"]
         self.assertEqual(len(found), 1)
-        self.assertIn("docs/missing.md", found[0].message)
+        self.assertIn(os.path.normpath("docs/missing.md"), found[0].message)
         (self.root / "docs").mkdir()
         target = self.root / "docs/local guide.md"
         target.write_text("# Local guide\n")

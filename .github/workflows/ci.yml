@@ -96,6 +96,11 @@ jobs:
           tests.test_skills.TestSkills.test_init_upgrades_legacy_work_mode_pointer_and_keeps_project_rules
           tests.test_skills.TestSkills.test_work_mode_entrypoint_is_required_and_init_repairs_it_without_losing_rules
           tests.test_skills.TestSkills.test_work_mode_accepts_project_wording_and_relative_link_not_a_fixed_template
+          tests.test_check.TestDoltRemoteUrl
+          tests.test_check.TestNewAndInit.test_new_numbers_decisions_and_passes_check
+          tests.test_check.TestNewAndInit.test_report_protocol_reference_uses_portable_separators_and_preserves_filenames
+          tests.test_entrypoints.TestEntrypointProtection.test_entrypoint_links_ignore_examples_and_check_actual_local_targets
+          tests.test_layout.TestVerify
 
   tests:
     name: Full suite (${{ matrix.python }})

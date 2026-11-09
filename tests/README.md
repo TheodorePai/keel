@@ -9,3 +9,5 @@
 完整 GitHub 门禁与贡献方式见 [贡献说明](../CONTRIBUTING.md)。
 
 `test_release.py` 验证每日发版的版本选择、积压 PR 检测、无更新跳过、发布来源与版本快照、安装包版本及摘要，以及已发布版本重试时不重复写入。Git 测试使用本地临时仓库，GitHub 写操作使用替身；真实云端发布由 `.github/workflows/release.yml` 验收。
+
+跨平台回归还覆盖本地 Dolt remote 的 file URI 编码、报告的 protocol 引用、入口链接诊断，以及 verify 的失败阻断、工作目录和暂存检查。verify 测试使用同一 Python 解释器执行契约脚本，项目的 verify 命令仍交由本机默认 shell 执行。
