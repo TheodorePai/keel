@@ -19,7 +19,7 @@ uv build
 
 CI 对每个 PR 执行检查，不按改动路径跳过整个工作流：
 
-- Windows、Linux、macOS × Python 3.11/3.12：Git 快照与入口路径回归。
+- Windows、Linux、macOS × Python 3.11/3.12：Git 快照、入口路径与运行产物生命周期回归。
 - Linux × Python 3.11/3.12/3.14：完整测试，安装固定版本且校验 SHA-256 的外部工具，任何跳过都会使检查失败。
 - 构建 sdist 和 wheel，在源码目录外安装 wheel 并检查命令及随包资源。
 - `CI gate`：仅在以上检查全部成功时通过，失败、取消或跳过都不能通过。

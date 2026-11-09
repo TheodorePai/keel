@@ -71,10 +71,11 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: ${{ matrix.python }}
-      - name: Check Git snapshot and entrypoint portability
+      - name: Check Git snapshot, entrypoint and runtime portability
         working-directory: ${{ needs.source.outputs.directory }}
         run: >-
           python -m unittest -v
+          tests.test_runtime
           tests.test_snapshots
           tests.test_worktrees.TestWorktreeGit
           tests.test_entrypoints.TestMarkdownTargetMatching
