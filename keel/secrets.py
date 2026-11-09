@@ -57,7 +57,8 @@ def key_file() -> Path:
 def fnox(*args: str, cwd: Path | None = None, stdin: str | None = None) -> subprocess.CompletedProcess:
     if not shutil.which("fnox"):
         raise SecretError(f"需要 fnox 与 age：{INSTALL_HINT}")
-    return subprocess.run(["fnox", *args], cwd=cwd, input=stdin, capture_output=True, text=True)
+    return subprocess.run(["fnox", *args], cwd=cwd, input=stdin, capture_output=True,
+                          text=True, encoding="utf-8")
 
 
 def declared(config: dict) -> dict[str, str]:
@@ -92,21 +93,21 @@ def shared_entries() -> dict[str, dict]:
     path = global_config()
     if not path.exists():
         return {}
-    data = tomllib.loads(path.read_text()).get("secrets", {})
+    data = tomllib.loads(path.read_text(encoding="utf-8")).get("secrets", {})
     return {k[len(PREFIX):]: v for k, v in data.items() if k.startswith(PREFIX)}
 
 
 def describe(name: str, description: str) -> None:
     """给共享密钥写说明（谁的、用在哪），fnox list 与 keel secret list --all 会显示。"""
     path = global_config()
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     key = re.escape(PREFIX + name)
     line = re.search(rf"^{key}\s*=\s*\{{[^\n]*\}}$", text, re.M)
     if not line:
         raise SecretError(f"没有共享密钥 {name}")
     entry = re.sub(r',?\s*description\s*=\s*"(?:[^"\\]|\\.)*"', "", line.group(0))
     entry = entry[:-1].rstrip().rstrip(",") + f", description = {json.dumps(description, ensure_ascii=False)} }}"
-    path.write_text(text[:line.start()] + entry + text[line.end():])
+    path.write_text(text[:line.start()] + entry + text[line.end():], encoding="utf-8")
 
 
 def registry_path() -> Path:
@@ -116,22 +117,23 @@ def registry_path() -> Path:
 def register(root: Path) -> None:
     """记住本机哪些项目声明了密钥，供 keel secret list --all 查看，避免全盘扫描。"""
     path = registry_path()
-    known = path.read_text().splitlines() if path.exists() else []
+    known = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     entry = str(root.resolve())
     if entry not in known:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join([*known, entry]) + "\n")
+        path.write_text("\n".join([*known, entry]) + "\n", encoding="utf-8")
 
 
 def usage_index() -> dict[str, list[str]]:
     """已登记项目的 fnox.toml 中引用了哪些 ${SHARED_X}；已删除的项目自动跳过。"""
     path = registry_path()
     out: dict[str, list[str]] = {}
-    for line in (path.read_text().splitlines() if path.exists() else []):
+    for line in (path.read_text(encoding="utf-8").splitlines() if path.exists() else []):
         fnox_file = Path(line) / FNOX_FILE
         if not fnox_file.exists():
             continue
-        for name in set(re.findall(r"\$\{" + PREFIX + r"([A-Za-z0-9_]+)\}", fnox_file.read_text(errors="ignore"))):
+        for name in set(re.findall(r"\$\{" + PREFIX + r"([A-Za-z0-9_]+)\}",
+                                   fnox_file.read_text(encoding="utf-8", errors="ignore"))):
             out.setdefault(name, []).append(line.replace(str(Path.home()), "~"))
     return out
 
@@ -155,7 +157,7 @@ def shared_names() -> set[str]:
     path = global_config()
     if not path.exists():
         return set()
-    data = tomllib.loads(path.read_text())
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
     return {k[len(PREFIX):] for k in data.get("secrets", {}) if k.startswith(PREFIX)}
 
 
@@ -175,7 +177,8 @@ def setup() -> list[str]:
         subprocess.run(["age-keygen", "-o", str(key)], capture_output=True, check=True)
         done.append(f"生成 age 私钥 {key}（务必备份：丢失后所有密钥无法解开）")
     _secret_permissions.protect(key)
-    public = subprocess.run(["age-keygen", "-y", str(key)], capture_output=True, text=True, check=True).stdout.strip()
+    public = subprocess.run(["age-keygen", "-y", str(key)], capture_output=True,
+                            text=True, encoding="utf-8", check=True).stdout.strip()
     header = ("# fnox 全局配置（由 keel 建立）。共享密钥以 SHARED_ 前缀存放并设 env = false，\n"
               "# 只有在项目 fnox.toml 中声明的才会注入。\n")
     body = (f'default_provider = "age"\n\n[providers.age]\ntype = "age"\n'
@@ -194,9 +197,9 @@ def setup() -> list[str]:
 def hide_from_env(name: str) -> None:
     """确保 SHARED_<name> 带 env = false。fnox set 新建条目时不会加，更新时会保留。"""
     path = global_config()
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     pattern = re.compile(rf"^({re.escape(PREFIX + name)}\s*=\s*\{{)(?![^\n]*\benv\s*=)", re.M)
-    path.write_text(pattern.sub(r"\1 env = false,", text))
+    path.write_text(pattern.sub(r"\1 env = false,", text), encoding="utf-8")
 
 
 def set_secret(name: str, value: str) -> str:
@@ -296,7 +299,7 @@ def write_project(root: Path, config: dict) -> list[str]:
     path = root / FNOX_FILE
     if not names and not path.exists():
         return []
-    text = path.read_text() if path.exists() else (
+    text = path.read_text(encoding="utf-8") if path.exists() else (
         PROJECT_HEADER + "；值来自 fnox 全局配置，本文件不含密文，可提交。\n"
         "# 运行：fnox exec -- <命令>\n\n[secrets]\n")
     prefix, suffix, kept, managed, existing = project_parts(text, names)
@@ -312,7 +315,7 @@ def write_project(root: Path, config: dict) -> list[str]:
     updated = prefix + body + "\n" + suffix
     if updated == text:
         return []
-    path.write_text(updated)
+    path.write_text(updated, encoding="utf-8")
     return ["fnox.toml 已同步密钥引用" + ("（已移除不再声明的引用）" if managed - names.keys() else "")]
 
 
@@ -323,11 +326,12 @@ def reference_matches(entry, source: str) -> bool:
 
 def ensure_gitignore(root: Path) -> list[str]:
     path = root / ".gitignore"
-    lines = path.read_text().splitlines() if path.exists() else []
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     add = [p for p in ENV_IGNORE if p not in lines]
     if not add:
         return []
-    path.write_text("\n".join([*lines, "", "# 明文密钥文件（密钥用 fnox，见 keel secret）", *add]).lstrip("\n") + "\n")
+    path.write_text("\n".join([*lines, "", "# 明文密钥文件（密钥用 fnox，见 keel secret）", *add]).lstrip("\n") + "\n",
+                    encoding="utf-8")
     return [".gitignore 忽略 .env"]
 
 
@@ -351,7 +355,8 @@ def init(root: Path, config: dict) -> list[str]:
 # ---------- 检查 ----------
 
 def tracked_files(root: Path) -> list[str]:
-    out = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, text=True)
+    out = subprocess.run(["git", "-C", str(root), "ls-files", "-z"],
+                         capture_output=True, text=True, encoding="utf-8")
     return [f for f in out.stdout.split("\0") if f]
 
 
@@ -367,7 +372,7 @@ def checks(root: Path, config: dict) -> list[tuple[str, str, str, str]]:
         try:
             if not path.is_file() or path.stat().st_size > 1_000_000:
                 continue
-            text = path.read_text(errors="ignore")
+            text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
         for label, pattern in SECRET_PATTERNS:
@@ -382,8 +387,8 @@ def checks(root: Path, config: dict) -> list[tuple[str, str, str, str]]:
         return out + [("keel.toml", "secret-config", str(e), "error")]
     path = root / FNOX_FILE
     try:
-        _, _, _, managed, existing = project_parts(path.read_text() if path.exists() else "", names)
-    except tomllib.TOMLDecodeError:
+        _, _, _, managed, existing = project_parts(path.read_text(encoding="utf-8") if path.exists() else "", names)
+    except (tomllib.TOMLDecodeError, UnicodeError):
         return out + [(FNOX_FILE, "secret-config", "TOML 格式错误，请修复配置", "error")]
     wrong = [n for n, s in names.items() if not reference_matches(existing.get(n), s)]
     if wrong:

@@ -93,6 +93,7 @@ jobs:
           tests.test_entrypoints.TestEntrypointProtection.test_new_work_mode_requirement_does_not_retroactively_invalidate_history
           tests.test_init.TestInitLayout
           tests.test_secrets.TestPrivateKeyPermissions
+          tests.test_secrets.TestConfigurationEncoding
           tests.test_skills.TestSkills.test_init_copies_keel_skill_and_mirror
           tests.test_skills.TestSkills.test_init_upgrades_legacy_work_mode_pointer_and_keeps_project_rules
           tests.test_skills.TestSkills.test_work_mode_entrypoint_is_required_and_init_repairs_it_without_losing_rules
@@ -127,6 +128,24 @@ jobs:
           import unittest
           sys.path.insert(0, str(Path.cwd()))
           suite = unittest.defaultTestLoader.loadTestsFromName('tests.test_secrets')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          raise SystemExit(0 if result.wasSuccessful() and not result.skipped else 1)
+
+      - name: Check secrets with UTF-8 mode disabled
+        working-directory: ${{ needs.source.outputs.directory }}
+        env:
+          PYTHONUTF8: "0"
+          # Keep logs readable; file IO still defaults to the system code page.
+          PYTHONIOENCODING: utf-8
+        shell: python
+        run: |
+          import sys
+          from pathlib import Path
+          import unittest
+          assert sys.flags.utf8_mode == 0, 'UTF-8 mode must be disabled for this regression'
+          sys.path.insert(0, str(Path.cwd()))
+          suite = unittest.defaultTestLoader.loadTestsFromNames([
+              'tests.test_secrets.TestConfigurationEncoding', 'tests.test_secrets.TestFnoxEncoding'])
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           raise SystemExit(0 if result.wasSuccessful() and not result.skipped else 1)
 
