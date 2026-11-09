@@ -2,6 +2,9 @@ import contextlib
 import io
 import json
 import os
+from pathlib import Path
+import subprocess
+import sys
 import time
 from unittest.mock import patch
 
@@ -24,7 +27,8 @@ class TestRuntime(Base):
             (path / ".active").unlink()
             runtime.write_json(path / runtime.STATE, {"version": 1, "state": "disposable",
                                "started_at": old - 100, "completed_at": old + 10,
-                               "owner": {"pid": 2147483647, "started": "fixture-exited"}})
+                               "owner": {"pid": 2147483647,
+                                         "started": "win32:1" if os.name == "nt" else "fixture-exited"}})
         return path
 
     def test_status_counts_files_without_following_external_symlinks(self):
@@ -87,9 +91,14 @@ class TestRuntime(Base):
         with self.assertRaises(runtime.LocalError):
             runtime.clean(self.root, ["alias/keep.txt"], days=0, apply=True)
         (path / "outside").symlink_to(outside, target_is_directory=True)
-        old = runtime.read_state(path)["started_at"]
-        os.utime(path / "outside", (old, old), follow_symlinks=False)
-        runtime.clean(self.root, ["task/run"], days=0, apply=True)
+        # Complete after adding the link, then age the run without depending on
+        # os.utime(follow_symlinks=False), unavailable on Windows Python 3.11/3.12.
+        completed = max(time.time(), runtime.measure(path).latest) + 1
+        data = runtime.read_state(path)
+        data["completed_at"] = completed
+        runtime.write_json(path / runtime.STATE, data)
+        with patch.object(time, "time", return_value=completed + 2 * 86400):
+            runtime.clean(self.root, ["task/run"], days=0, apply=True)
         self.assertFalse(path.exists())
         self.assertEqual(valuable.read_text(), "keep")
 
@@ -145,6 +154,15 @@ class TestRuntime(Base):
             self.assertIn("状态不明", " ".join(runtime.clean(self.root, ["task/run"], days=0, apply=True)))
             self.assertTrue(path.exists())
 
+    def test_unclassified_file_is_retained_by_explicit_and_automatic_cleanup(self):
+        base = self.root / "work/.local"
+        base.mkdir(parents=True)
+        path = base / "legacy.log"
+        path.write_text("keep")
+        self.assertIn("状态不明", " ".join(runtime.clean(self.root, ["legacy.log"], days=0, apply=True)))
+        self.assertIn("状态不明", " ".join(runtime.sweep(self.root, {})))
+        self.assertEqual(path.read_text(), "keep")
+
     def test_completion_time_not_mtime_controls_retention(self):
         path = self.old_run()
         data = runtime.read_state(path)
@@ -153,15 +171,17 @@ class TestRuntime(Base):
         self.assertIn("尚未满", " ".join(runtime.clean(self.root, ["task/run"], apply=True)))
 
     def test_active_identity_exit_reuse_and_unknown(self):
-        owner = {"pid": 123, "started": "original"}
-        with patch.object(runtime, "process_identity", return_value="original"):
+        original = "win32:1" if os.name == "nt" else "original"
+        reused = "win32:2" if os.name == "nt" else "reused"
+        owner = {"pid": 123, "started": original}
+        with patch.object(runtime, "process_identity", return_value=original):
             self.assertEqual(runtime.process_status(owner), "alive")
-        with patch.object(runtime, "process_identity", return_value="reused"):
+        with patch.object(runtime, "process_identity", return_value=reused):
             self.assertEqual(runtime.process_status(owner), "exited")
         with patch.object(runtime, "process_identity", return_value=None):
-            with patch.object(os, "kill", side_effect=ProcessLookupError):
+            with patch.object(runtime, "process_exited", return_value=True):
                 self.assertEqual(runtime.process_status(owner), "exited")
-            with patch.object(os, "kill", side_effect=PermissionError):
+            with patch.object(runtime, "process_exited", return_value=None):
                 self.assertEqual(runtime.process_status(owner), "unknown")
         self.assertEqual(runtime.process_status({"pid": -1}), "unknown")
 
@@ -359,7 +379,7 @@ class TestRuntime(Base):
 
     def test_partial_delete_is_logged_without_claiming_freed_bytes(self):
         path = self.old_run()
-        with patch.object(runtime.shutil, "rmtree", side_effect=OSError("interrupted")), self.assertRaises(runtime.LocalError):
+        with patch.object(runtime, "remove_tree", side_effect=OSError("interrupted")), self.assertRaises(runtime.LocalError):
             runtime.clean(self.root, ["task/run"], apply=True)
         events = [json.loads(line) for line in (runtime.metadata_dir(self.root) / "cleanup.jsonl").read_text().splitlines()]
         self.assertEqual(events[-1]["event"], "delete_incomplete")
@@ -388,3 +408,174 @@ class TestRuntime(Base):
         self.assertTrue(path.exists())
         self.assertEqual(pending.read_text(), "interrupted write")
         self.assertEqual(len(list(pending.parent.glob("*.pending"))), 1)
+
+    def child(self, code):
+        return subprocess.run([sys.executable, "-c", code, str(self.root)],
+                              cwd=self.root, capture_output=True, text=True, timeout=15,
+                              env={**os.environ, "PYTHONPATH": str(Path(runtime.__file__).parent.parent),
+                                   "PYTHONDONTWRITEBYTECODE": "1"})
+
+    def redirect_directory(self, link, target):
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                           check=True, capture_output=True, timeout=10)
+        else:
+            link.symlink_to(target, target_is_directory=True)
+
+    def test_process_queries_leave_a_real_producer_alive_and_detect_its_exit(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            identity = runtime.process_identity(child.pid)
+            self.assertIsNotNone(identity)
+            owner = {"pid": child.pid, "started": identity}
+            # On Windows os.kill(pid, 0) terminates the process; never use it.
+            with patch.object(runtime.os, "kill", side_effect=AssertionError("must not signal")):
+                self.assertEqual(runtime.process_status(owner), "alive")
+                if os.name == "nt":
+                    with patch.object(runtime, "process_identity", return_value=None):
+                        self.assertEqual(runtime.process_status(owner), "unknown")
+            self.assertIsNone(child.poll())
+        finally:
+            child.terminate()
+            child.wait(timeout=10)
+        self.assertEqual(runtime.process_status(owner), "exited")
+
+    def test_foreign_process_identity_is_unknown_even_if_pid_matches(self):
+        identity = "POSIX process time" if os.name == "nt" else "win32:123"
+        with patch.object(runtime, "process_identity", return_value="different") as query:
+            self.assertEqual(runtime.process_status({"pid": os.getpid(), "started": identity}), "unknown")
+        query.assert_not_called()
+
+    def test_lock_contends_between_processes_and_releases_after_process_exit(self):
+        probe = """
+import sys
+from pathlib import Path
+from keel import runtime
+try:
+    with runtime.local_lock(Path(sys.argv[1])):
+        print('acquired')
+except runtime.LocalError:
+    print('blocked')
+"""
+        with runtime.local_lock(self.root):
+            result = self.child(probe)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "blocked")
+        result = self.child(probe)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "acquired")
+        crashed = self.child("""
+import os, sys
+from pathlib import Path
+from keel import runtime
+with runtime.local_lock(Path(sys.argv[1])):
+    os._exit(23)
+""")
+        self.assertEqual(crashed.returncode, 23, crashed.stderr)
+        with runtime.local_lock(self.root):
+            pass
+
+    def test_hardlinked_lock_is_rejected_without_changing_external_file(self):
+        metadata = runtime.metadata_dir(self.root)
+        outside = self.root / "important"
+        outside.write_bytes(b"keep")
+        os.link(outside, metadata / "lock")
+        with self.assertRaises(runtime.LocalError):
+            with runtime.local_lock(self.root):
+                self.fail("hardlinked lock was accepted")
+        self.assertEqual(outside.read_bytes(), b"keep")
+
+    def test_redirected_management_directory_is_not_used(self):
+        base = self.root / "work/.local"
+        base.mkdir(parents=True)
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.redirect_directory(base / ".keel", outside)
+        with self.assertRaises(runtime.LocalError):
+            runtime.transition(self.root, "task/run", "running")
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_junction_or_directory_link_target_is_rejected_and_nested_link_is_unlinked(self):
+        path = self.old_run()
+        base = self.root / "work/.local"
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "valuable").write_text("keep")
+        self.redirect_directory(base / "alias", outside)
+        self.redirect_directory(path / "nested", outside)
+        with self.assertRaises(runtime.LocalError):
+            runtime.clean(self.root, ["alias"], days=0, apply=True)
+        self.assertNotIn("alias", runtime.candidates(base))
+        self.assertNotIn("nested", " ".join(runtime.notices(base)))
+        data = runtime.read_state(path)
+        data["completed_at"] = max(time.time(), runtime.measure(path).latest) + 1
+        runtime.write_json(path / runtime.STATE, data)
+        with patch.object(time, "time", return_value=data["completed_at"] + 2 * 86400):
+            runtime.clean(self.root, ["task/run"], days=0, apply=True)
+        self.assertFalse(path.exists())
+        self.assertEqual((outside / "valuable").read_text(), "keep")
+
+    def test_replaced_cleanup_root_is_not_deleted(self):
+        path = self.old_run()
+        original = runtime.remove_tree
+        def replace_before_delete(target, identity):
+            target.rename(target.with_name("saved"))
+            target.mkdir()
+            (target / "valuable").write_text("keep")
+            original(target, identity)
+        with patch.object(runtime, "remove_tree", replace_before_delete), self.assertRaises(runtime.LocalError):
+            runtime.clean(self.root, ["task/run"], days=0, apply=True)
+        self.assertEqual((path / "valuable").read_text(), "keep")
+        self.assertTrue(path.with_name("saved").exists())
+
+    def test_failed_atomic_replace_preserves_previous_record(self):
+        path = self.root / "record.json"
+        runtime.write_json(path, {"version": 1})
+        with patch.object(runtime.os, "replace", side_effect=OSError("disk error")):
+            with self.assertRaises(OSError):
+                runtime.write_json(path, {"version": 2})
+        self.assertEqual(runtime.read_json(path), {"version": 1})
+        self.assertFalse(path.with_name(".record.json.pending").exists())
+
+    def test_platform_path_rules_preserve_native_filename_semantics(self):
+        for name in ("../outside", ".keel/run", "/absolute"):
+            with self.subTest(name=name), self.assertRaises(runtime.LocalError):
+                runtime.relative_path(name)
+        windows_names = ("C:relative", "C:/absolute", "//server/share/run", "run:stream",
+                         ".KEEL/run", "CON/run", "task/NUL.txt", "task./run", "task /run")
+        for name in windows_names:
+            with self.subTest(name=name):
+                if os.name == "nt":
+                    with self.assertRaises(runtime.LocalError):
+                        runtime.relative_path(name)
+                elif not name.startswith("/"):
+                    self.assertEqual(runtime.relative_path(name), Path(name))
+
+
+if os.name == "nt":
+    class TestWindowsRuntime(Base):
+        def test_guard_pins_ancestors_until_all_handles_are_closed(self):
+            parent = self.root / "parent"
+            child = parent / "child"
+            child.mkdir(parents=True)
+            moved = self.root / "moved"
+            with runtime.directory_guard(child):
+                with self.assertRaises(OSError):
+                    parent.rename(moved)
+            parent.rename(moved)
+            self.assertTrue((moved / "child").is_dir())
+
+        def test_denied_process_query_preserves_unknown_and_never_signals(self):
+            windows = runtime._windows
+            with patch.object(windows, "_open_process", return_value=None), \
+                    patch.object(windows.C, "get_last_error", return_value=5), \
+                    patch.object(runtime.os, "kill", side_effect=AssertionError("must not signal")):
+                self.assertIsNone(runtime.process_identity(123))
+                self.assertEqual(runtime.process_status({"pid": 123, "started": "win32:1"}), "unknown")
+
+        def test_network_path_is_rejected_before_opening_a_handle(self):
+            with patch.object(runtime._windows, "_create") as create:
+                with self.assertRaises(OSError):
+                    with runtime.directory_guard(Path(r"\\server\share\run")):
+                        self.fail("network path accepted")
+            create.assert_not_called()
