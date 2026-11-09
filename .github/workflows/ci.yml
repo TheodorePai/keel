@@ -122,7 +122,10 @@ jobs:
         working-directory: ${{ needs.source.outputs.directory }}
         shell: python
         run: |
+          import sys
+          from pathlib import Path
           import unittest
+          sys.path.insert(0, str(Path.cwd()))
           suite = unittest.defaultTestLoader.loadTestsFromName('tests.test_secrets')
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           raise SystemExit(0 if result.wasSuccessful() and not result.skipped else 1)
