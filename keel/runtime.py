@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
 import stat
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext, ExitStack
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -18,6 +18,12 @@ from pathlib import Path
 
 from keel.assets import Store, human
 from keel.layout import LOCAL_PATH
+
+if os.name == "nt":
+    from keel import _runtime_windows as _windows
+else:
+    import fcntl
+    _windows = None
 
 MARKERS = {".keep", ".active"}
 STATE = ".run.json"
@@ -31,6 +37,42 @@ class LocalError(SystemExit):
     pass
 
 
+def is_redirect(path: Path) -> bool:
+    return _windows.is_redirect(path) if _windows else path.is_symlink()
+
+
+def directory_guard(path: Path):
+    return _windows.directory_guard(path) if _windows else nullcontext()
+
+
+def mkdir(path: Path, *, parents: bool = False, exist_ok: bool = False):
+    if _windows:
+        _windows.mkdir(path, parents=parents, exist_ok=exist_ok)
+    else:
+        path.mkdir(parents=parents, exist_ok=exist_ok)
+
+
+def relative_path(name: str) -> Path:
+    path = Path(name)
+    first = path.parts[0] if path.parts else ""
+    if _windows:
+        first = first.casefold()
+    if (path.anchor or not path.parts or ".." in path.parts or first == ".keel"
+            or (_windows and any(":" in part or part.endswith((".", " "))
+                                 or Path(part).is_reserved() for part in path.parts))):
+        raise LocalError("只接受 .local 内明确的相对路径，不能使用盘符、管理目录或 ..")
+    return path
+
+
+def descendants(path: Path):
+    """Enumerate without entering symbolic links or Windows reparse points."""
+    with directory_guard(path):
+        for child in path.iterdir():
+            yield child
+            if not is_redirect(child) and child.is_dir():
+                yield from descendants(child)
+
+
 @dataclass
 class Usage:
     size: int
@@ -41,21 +83,22 @@ class Usage:
 def measure(path: Path) -> Usage:
     """不跟随软链接；mtime 仅用于近期写入保护，不决定完成后的保留期。"""
     info = path.lstat()
-    directory = stat.S_ISDIR(info.st_mode)
+    directory = stat.S_ISDIR(info.st_mode) and not is_redirect(path)
     size = 0 if directory else info.st_size
     latest, protected = (0 if directory or path.name == STATE else info.st_mtime), path.name in MARKERS
     if directory:
-        for child in path.iterdir():
-            usage = measure(child)
-            size += usage.size
-            latest = max(latest, usage.latest)
-            protected = protected or usage.protected
+        with directory_guard(path):
+            for child in path.iterdir():
+                usage = measure(child)
+                size += usage.size
+                latest = max(latest, usage.latest)
+                protected = protected or usage.protected
     return Usage(size, latest, protected)
 
 
 def base_dir(root: Path) -> Path:
     base = root / LOCAL_PATH
-    if (root / "work").is_symlink() or base.is_symlink():
+    if is_redirect(root / "work") or is_redirect(base):
         raise LocalError(f"拒绝操作软链接运行目录：{LOCAL_PATH}")
     if base.exists() and not base.is_dir():
         raise LocalError(f"{LOCAL_PATH} 应是目录")
@@ -72,7 +115,7 @@ def status(root: Path) -> list[str]:
             usage = measure(path)
             total += usage.size
             suffix = "（保留标记）" if usage.protected else ""
-            if path.is_symlink():
+            if is_redirect(path):
                 suffix = "（软链接，未扫描目标）"
             lines.append(f"{human(usage.size):>10}  {path.name}{suffix}")
     except OSError as e:
@@ -81,13 +124,11 @@ def status(root: Path) -> list[str]:
 
 
 def target_path(base: Path, name: str) -> Path:
-    relative = Path(name)
-    if relative.is_absolute() or not relative.parts or ".." in relative.parts or relative.parts[0] == ".keel":
-        raise LocalError("只接受 .local 内明确的相对路径，不能清理整个运行目录或使用 ..")
+    relative = relative_path(name)
     path = base
     for part in relative.parts:
         path /= part
-        if path.is_symlink():
+        if is_redirect(path):
             raise LocalError(f"拒绝清理软链接路径：{name}")
     if not path.exists():
         raise LocalError(f"运行产物不存在：{name}")
@@ -111,14 +152,14 @@ def retained_paths(root: Path) -> list[Path]:
 
 def metadata_dir(root: Path) -> Path:
     base = base_dir(root)
-    base.mkdir(parents=True, exist_ok=True)
+    mkdir(base, parents=True, exist_ok=True)
     path = base / ".keel"
-    if path.is_symlink():
+    if is_redirect(path):
         raise LocalError("Keel 本地管理目录是软链接，未清理")
     try:
-        path.mkdir()
+        mkdir(path)
     except FileExistsError:
-        if not path.is_dir() or (path / "manager.json").is_symlink():
+        if not path.is_dir() or is_redirect(path / "manager.json"):
             raise LocalError("Keel 本地管理目录无效，未清理")
         try:
             if read_json(path / "manager.json") != {"version": 1}:
@@ -133,7 +174,18 @@ def metadata_dir(root: Path) -> Path:
 @contextmanager
 def local_lock(root: Path):
     """状态变更、每日判定与删除共享进程锁；忙时只提示。"""
-    metadata = metadata_dir(root)
+    try:
+        metadata = metadata_dir(root)
+    except OSError as e:
+        raise LocalError(f"无法安全访问运行产物管理目录，未清理：{e}") from e
+    if _windows:
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(_windows.exclusive_lock(metadata / "lock"))
+            except OSError as e:
+                raise LocalError(f"其他 Keel 正在处理运行产物或无法安全锁定，本次停止：{e}") from e
+            yield metadata
+        return
     try:
         fd = os.open(metadata / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     except OSError as e:
@@ -150,8 +202,8 @@ def local_lock(root: Path):
 
 def transition(root: Path, name: str, state: str, pid: int | None = None,
                reason: str | None = None, review_on: str | None = None) -> list[str]:
-    with local_lock(root):
-        return _transition(root, name, state, pid, reason, review_on)
+    with local_lock(root), ExitStack() as guards:
+        return _transition(root, name, state, pid, reason, review_on, guards=guards)
 
 
 def clean(root: Path, names: list[str], days: int = 30, apply: bool = False) -> list[str]:
@@ -180,7 +232,7 @@ def candidates(base: Path) -> list[str]:
     for directory, dirs, files in os.walk(base, followlinks=False,
                                           onerror=lambda error: (_ for _ in ()).throw(error)):
         path = Path(directory)
-        dirs[:] = [d for d in dirs if not (path / d).is_symlink() and not (path == base and d == ".keel")]
+        dirs[:] = [d for d in dirs if not is_redirect(path / d) and not (path == base and d == ".keel")]
         if path != base and (path / STATE).exists():
             found.append(path.relative_to(base).as_posix())
             dirs[:] = []
@@ -195,7 +247,7 @@ def sweep(root: Path, config: dict, daily: bool = False) -> list[str]:
     with local_lock(root) as metadata:
         stamp = metadata / "daily.json"
         now = time.time()
-        if stamp.is_symlink():
+        if is_redirect(stamp):
             raise LocalError("每日检查记录是软链接，未清理")
         if stamp.exists():
             try:
@@ -231,12 +283,18 @@ def sweep(root: Path, config: dict, daily: bool = False) -> list[str]:
         return lines
 
 
+def read_bytes(path: Path, limit: int) -> bytes:
+    with directory_guard(path.parent):
+        fd = (_windows.open_record(path, os.O_RDONLY) if _windows else
+              os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK))
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("记录必须是普通文件")
+            return stream.read(limit)
+
+
 def read_json(path: Path) -> object:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            raise ValueError("记录必须是普通文件")
-        raw = stream.read(65537)
+    raw = read_bytes(path, 65537)
     if len(raw) > 65536:
         raise ValueError("记录过大")
     return json.loads(raw)
@@ -250,11 +308,7 @@ class Audit:
         self.entries = []
         if os.path.lexists(self.path):
             try:
-                fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                with os.fdopen(fd, "rb") as stream:
-                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                        raise ValueError("log type")
-                    raw = stream.read(AUDIT_BYTES + 1)
+                raw = read_bytes(self.path, AUDIT_BYTES + 1)
                 if len(raw) > AUDIT_BYTES:
                     raise ValueError("log too large")
                 for line in raw.splitlines():
@@ -289,7 +343,7 @@ def unclassified(base: Path, managed: list[str]) -> list[str]:
             name = child.relative_to(base).as_posix()
             if child == base / ".keel" or name in managed:
                 continue
-            if any(item.startswith(name + "/") for item in managed) and child.is_dir() and not child.is_symlink():
+            if any(item.startswith(name + "/") for item in managed) and child.is_dir() and not is_redirect(child):
                 visit(child)
             else:
                 found.append(name)
@@ -299,7 +353,7 @@ def unclassified(base: Path, managed: list[str]) -> list[str]:
 
 def read_state(path: Path) -> dict | None:
     record = path / STATE
-    if not record.is_file() or record.is_symlink():
+    if not record.is_file() or is_redirect(record):
         return None
     try:
         data = read_json(record)
@@ -320,11 +374,18 @@ def read_state(path: Path) -> dict | None:
 
 def write_bytes(path: Path, data: bytes) -> None:
     """原子替换，不通过软链接写入；旧日志不会在失败时被截断。"""
-    if path.is_symlink():
+    with directory_guard(path.parent):
+        _write_bytes(path, data)
+
+
+def _write_bytes(path: Path, data: bytes) -> None:
+    if is_redirect(path):
         raise LocalError(f"拒绝写入软链接记录：{path.name}")
     temporary = path.with_name(f".{path.name}.pending")
     try:
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        fd = (_windows.open_record(temporary, flags) if _windows else
+              os.open(temporary, flags | os.O_NOFOLLOW, 0o600))
     except FileExistsError as error:
         raise LocalError(f"存在未完成的记录写入 {temporary.name}，需核查后恢复；未删除") from error
     try:
@@ -345,6 +406,8 @@ def process_identity(pid: int) -> str | None:
     """使用系统报告的启动时间识别进程；失败时不猜测。"""
     if type(pid) is not int or pid <= 0:
         return None
+    if _windows:
+        return _windows.process_identity(pid)
     try:
         result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
                                 capture_output=True, text=True, timeout=5,
@@ -354,20 +417,29 @@ def process_identity(pid: int) -> str | None:
         return None
 
 
+def process_exited(pid: int) -> bool | None:
+    if _windows:
+        return _windows.process_exited(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except (OSError, OverflowError):
+        pass
+    return None
+
+
 def process_status(owner: object) -> str:
     if (not isinstance(owner, dict) or type(owner.get("pid")) is not int
             or owner["pid"] <= 0 or not isinstance(owner.get("started"), str) or not owner["started"]):
         return "unknown"
+    if (_windows and not re.fullmatch(r"win32:\d+", owner["started"])) or (
+            not _windows and owner["started"].startswith("win32:")):
+        return "unknown"
     current = process_identity(owner["pid"])
     if current is not None:
         return "alive" if current == owner["started"] else "exited"
-    try:
-        os.kill(owner["pid"], 0)
-    except ProcessLookupError:
-        return "exited"
-    except (OSError, OverflowError):
-        pass
-    return "unknown"
+    return "exited" if process_exited(owner["pid"]) is True else "unknown"
 
 
 def keep_reason(path: Path) -> str | None:
@@ -375,7 +447,7 @@ def keep_reason(path: Path) -> str | None:
     if not os.path.lexists(marker):
         return None
     try:
-        if marker.is_symlink() or not marker.is_file():
+        if is_redirect(marker) or not marker.is_file():
             raise ValueError("not a regular marker")
         data = read_json(marker)
         if not isinstance(data, dict) or not isinstance(data.get("reason"), str) or not data["reason"].strip():
@@ -393,7 +465,7 @@ def notices(base: Path) -> list[str]:
         return lines
     for directory, dirs, files in os.walk(base, followlinks=False):
         path = Path(directory)
-        dirs[:] = [d for d in dirs if not (path / d).is_symlink() and not (path == base and d == ".keel")]
+        dirs[:] = [d for d in dirs if not is_redirect(path / d) and not (path == base and d == ".keel")]
         if (path / STATE).exists():
             data = read_state(path)
             state = data["state"] if data else "状态不明（无效运行记录）"
@@ -411,7 +483,7 @@ def marker_reason(path: Path) -> str | None:
     if not os.path.lexists(marker):
         return None
     try:
-        owner = read_json(marker) if marker.is_file() and not marker.is_symlink() else None
+        owner = read_json(marker) if marker.is_file() and not is_redirect(marker) else None
     except (OSError, ValueError):
         owner = None
     state = process_status(owner)
@@ -420,7 +492,7 @@ def marker_reason(path: Path) -> str | None:
 
 
 def _transition(root: Path, name: str, state: str, pid: int | None = None,
-               reason: str | None = None, review_on: str | None = None) -> list[str]:
+               reason: str | None = None, review_on: str | None = None, *, guards: ExitStack) -> list[str]:
     if state not in STATES:
         raise LocalError("无效运行状态")
     if state == "retained":
@@ -433,14 +505,12 @@ def _transition(root: Path, name: str, state: str, pid: int | None = None,
     base = base_dir(root)
     # begin 仅创建全新目录；不能把旧目录自动认领为可丢弃。
     if state == "running":
-        relative = Path(name)
-        if relative.is_absolute() or not relative.parts or ".." in relative.parts or relative.parts[0] == ".keel":
-            raise LocalError("运行目录必须是 .local 内非空相对路径")
-        base.mkdir(parents=True, exist_ok=True)
+        relative = relative_path(name)
+        mkdir(base, parents=True, exist_ok=True)
         path = base
         for part in relative.parts:
             path /= part
-            if path.is_symlink():
+            if is_redirect(path):
                 raise LocalError("拒绝软链接运行路径")
         if any((parent / STATE).exists() for parent in path.parents if parent.is_relative_to(base)):
             raise LocalError("运行目录不能嵌套")
@@ -448,12 +518,14 @@ def _transition(root: Path, name: str, state: str, pid: int | None = None,
         started = process_identity(owner_pid)
         if started is None:
             raise LocalError("无法读取运行进程启动时间；未创建运行记录")
-        path.mkdir(parents=True, exist_ok=False)
+        mkdir(path, parents=True, exist_ok=False)
+        guards.enter_context(directory_guard(path))
         owner = {"pid": owner_pid, "started": started}
         write_json(path / ".active", owner)
         data = {"version": 1, "state": state, "started_at": time.time(), "completed_at": None, "owner": owner}
     else:
         path = target_path(base, name)
+        guards.enter_context(directory_guard(path))
         data = read_state(path)
         if data is None:
             raise LocalError("状态不明，不能自动认领旧目录；先转存并检查成果")
@@ -463,7 +535,7 @@ def _transition(root: Path, name: str, state: str, pid: int | None = None,
             if process_status(data.get("owner")) != "exited":
                 raise LocalError("运行进程仍在运行或身份不明，先确认所有服务停止")
             marker = path / ".active"
-            if marker.is_symlink():
+            if is_redirect(marker):
                 raise LocalError("活动标记是软链接，状态不明")
             if marker.exists():
                 try:
@@ -481,7 +553,7 @@ def _transition(root: Path, name: str, state: str, pid: int | None = None,
         write_json(path / ".keep", {"reason": reason.strip(), "review_on": review_on})
     elif state == "disposable" and data.get("retention_managed"):
         # 只有明确重新声明可丢弃，才解除由本命令创建的保留；旧手写标记不动。
-        if (path / ".keep").is_symlink():
+        if is_redirect(path / ".keep"):
             raise LocalError("保留标记是软链接，需先核查")
         (path / ".keep").unlink(missing_ok=True)
     data["retention_managed"] = state == "retained"
@@ -496,7 +568,7 @@ def eligibility(path: Path, days: int, now: float, usage: Usage) -> str | None:
     if data["state"] == "running":
         activity = process_status(data.get("owner"))
         return "运行中" if activity == "alive" else "状态不明：运行进程已退出或身份无法核对，需确认中断产物"
-    if any(child.name == STATE for child in path.rglob(STATE) if child.parent != path):
+    if any(child.name == STATE for child in descendants(path) if child.parent != path):
         return "状态不明：目录内有其他运行记录，需逐次核查"
     if data["state"] != "disposable":
         return f"运行状态为 {data['state']}，未声明可丢弃"
@@ -518,10 +590,26 @@ def protection(root: Path, path: Path, days: int, now: float, usage: Usage) -> s
         return "仍有登记资产或 Git 跟踪内容，先迁移并更新登记"
     ancestors = [p for p in path.parents if p == base or p.is_relative_to(base)]
     if usage.protected or any(os.path.lexists(p / marker) for p in ancestors for marker in MARKERS):
-        directories = [path, *[p for p in path.rglob("*") if p.is_dir() and not p.is_symlink()], *ancestors]
+        directories = [path, *[p for p in descendants(path) if p.is_dir() and not is_redirect(p)], *ancestors]
         reasons = [reason for p in directories for reason in (keep_reason(p), marker_reason(p)) if reason]
         return "；".join(reasons) if reasons else "存在 .keep 或 .active 标记"
     return eligibility(path, days, now, usage)
+
+
+def tree_identity(path: Path):
+    if _windows:
+        return _windows.identity(path)
+    info = path.lstat()
+    return info.st_dev, info.st_ino
+
+
+def remove_tree(path: Path, identity):
+    if _windows:
+        _windows.remove_tree(path, identity)
+    else:
+        if tree_identity(path) != identity:
+            raise OSError("清理目标已被替换，停止删除")
+        shutil.rmtree(path)
 
 
 def _clean(root: Path, names: list[str], days: int = 30, apply: bool = False) -> list[str]:
@@ -537,6 +625,7 @@ def _clean(root: Path, names: list[str], days: int = 30, apply: bool = False) ->
         retained_paths(root)  # 在任何删除前验证清单与 Git 均可读取。
         for path in paths:
             name = path.relative_to(base).as_posix()
+            identity = tree_identity(path)
             usage = measure(path)
             reason = protection(root, path, days, time.time(), usage)
             if reason:
@@ -556,7 +645,7 @@ def _clean(root: Path, names: list[str], days: int = 30, apply: bool = False) ->
                     lines.append(f"保留 {name}：{reason}")
                     continue
                 try:
-                    shutil.rmtree(path)
+                    remove_tree(path, identity)
                 except OSError as error:
                     audit.add("delete_incomplete", name, reason=f"删除中断，需核查剩余内容：{error}")
                     raise
