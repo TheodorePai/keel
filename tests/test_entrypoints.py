@@ -113,7 +113,7 @@ class TestEntrypointProtection(Base):
                           '<!-- [Commented out](docs/comment.md) -->\n')
         found = [f for f in cli.check(cli.load_project(self.root)) if f.rule == "agent-entrypoint-link"]
         self.assertEqual(len(found), 1)
-        self.assertIn("docs/missing.md", found[0].message)
+        self.assertIn(os.path.normpath("docs/missing.md"), found[0].message)
         (self.root / "docs").mkdir()
         target = self.root / "docs/local guide.md"
         target.write_text("# Local guide\n")
@@ -192,7 +192,7 @@ class TestRealBeadsEntrypoints(Base):
         self.assertEqual(agents.count(".agents/skills/keel/SKILL.md"), 1)
         self.assertEqual(agents.count(".agents/skills/beads/SKILL.md"), 1)
         self.assertEqual(agents.count(entrypoints.GIT_AUTHORITY), 1)
-        self.assertIn(entrypoints.WORK_MODE_TARGET, cli.markdown_link_targets(agents))
+        self.assertTrue(cli.has_markdown_target(agents, entrypoints.WORK_MODE_TARGET))
         self.assertTrue((root / entrypoints.WORK_MODE_TARGET).is_file())
         self.assertTrue((root / ".agents/skills/beads/SKILL.md").is_file())
         self.assertEqual((root / ".agents/skills/beads/SKILL.md").read_bytes(),

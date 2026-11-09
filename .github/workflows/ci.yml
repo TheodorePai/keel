@@ -99,6 +99,52 @@ jobs:
           tests.test_skills.TestSkills.test_init_upgrades_legacy_work_mode_pointer_and_keeps_project_rules
           tests.test_skills.TestSkills.test_work_mode_entrypoint_is_required_and_init_repairs_it_without_losing_rules
           tests.test_skills.TestSkills.test_work_mode_accepts_project_wording_and_relative_link_not_a_fixed_template
+          tests.test_check.TestDoltRemoteUrl
+          tests.test_check.TestNewAndInit.test_new_numbers_decisions_and_passes_check
+          tests.test_check.TestNewAndInit.test_report_protocol_reference_uses_portable_separators_and_preserves_filenames
+          tests.test_entrypoints.TestEntrypointProtection.test_entrypoint_links_ignore_examples_and_check_actual_local_targets
+          tests.test_layout.TestVerify
+
+  beads-windows:
+    name: Windows Beads integration (${{ matrix.python }})
+    needs: source
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    env:
+      BD_NON_INTERACTIVE: "1"
+      # Dolt's nested Git cache can exceed MAX_PATH. This affects only this job,
+      # including child Git processes; no global Git configuration is changed.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: core.longpaths
+      GIT_CONFIG_VALUE_0: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install verified Windows Beads
+        working-directory: ${{ needs.source.outputs.directory }}
+        run: python .github/scripts/install-windows-beads.py
+      - name: Run real Beads integration without skips
+        working-directory: ${{ needs.source.outputs.directory }}
+        shell: python
+        run: |
+          import sys
+          from pathlib import Path
+          import unittest
+          sys.path.insert(0, str(Path.cwd()))
+          names = ['tests.test_entrypoints.TestRealBeadsEntrypoints',
+                   'tests.test_init.TestPublishBeads', 'tests.test_worktrees.TestWorktreeBeads']
+          suite = unittest.defaultTestLoader.loadTestsFromNames(names)
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          raise SystemExit(0 if result.wasSuccessful() and not result.skipped else 1)
 
   secrets-windows:
     name: Windows secrets integration (${{ matrix.python }})
@@ -222,7 +268,7 @@ jobs:
   gate:
     name: CI gate
     if: ${{ always() }}
-    needs: [source, portability, secrets-windows, tests, package]
+    needs: [source, portability, beads-windows, secrets-windows, tests, package]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

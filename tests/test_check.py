@@ -14,6 +14,18 @@ def run(cwd, *args):
     subprocess.run(args, cwd=cwd, check=True, capture_output=True)
 
 
+def cleanup_temporary(temporary):
+    # Windows can briefly retain directory handles after Beads/Git exit.
+    # Retry only sharing violations; persistent cleanup errors still fail.
+    for attempt in range(20):
+        try:
+            return temporary.cleanup()
+        except PermissionError as error:
+            if os.name != "nt" or error.winerror != 32 or attempt == 19:
+                raise
+            time.sleep(0.1)
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -32,7 +44,7 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         assets.PERSONAL_CONFIG = self._personal
-        self.tmp.cleanup()
+        cleanup_temporary(self.tmp)
 
     def write(self, rel, text):
         path = self.root / "docs" / rel
@@ -266,6 +278,15 @@ class TestNewAndInit(Base):
         bad = [f for f in check(project) if f.rule not in ("beads", "protocol")]
         self.assertEqual(bad, [])
 
+    def test_report_protocol_reference_uses_portable_separators_and_preserves_filenames(self):
+        project = load_project(self.root)
+        slug = "中文 协议#reference" + (r"\literal" if os.name != "nt" else "")
+        protocol = new_note(project, "protocol", "协议", slug, [])
+        report = new_note(project, "report", "报告", "portable", [], protocol=protocol.stem)
+        meta, _, _ = parse_frontmatter(report.read_text())
+        self.assertEqual(meta["protocol"], "../protocols/" + protocol.name)
+        self.assertEqual((report.parent / meta["protocol"]).resolve(), protocol.resolve())
+
     def test_init_is_idempotent(self):
         (self.root / "keel.toml").unlink()
         init_project(self.root)
@@ -328,3 +349,14 @@ class TestDoltRemoteUrl(unittest.TestCase):
         self.assertEqual(dolt_remote_url("git@github.com:o/r.git"), "git+ssh://git@github.com/o/r.git")
         self.assertEqual(dolt_remote_url("git+https://x/y.git"), "git+https://x/y.git")
         self.assertTrue(dolt_remote_url("/tmp/r.git").startswith("git+file:///"))
+
+    def test_local_paths_are_encoded_as_file_uris(self):
+        from keel.cli import dolt_remote_url
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "中文 repo #1.git"
+            self.assertEqual(dolt_remote_url(str(path)), "git+" + path.resolve().as_uri())
+            self.assertIn("%20", dolt_remote_url(str(path)))
+            self.assertIn("%23", dolt_remote_url(str(path)))
+        relative = Path("relative repo.git")
+        self.assertEqual(dolt_remote_url(str(relative)), "git+" + relative.resolve().as_uri())
+        self.assertEqual(dolt_remote_url("file:///tmp/r%20repo.git"), "git+file:///tmp/r%20repo.git")

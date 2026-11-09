@@ -566,7 +566,7 @@ def new_note(project: Project, kind: str, title: str, slug: str | None, beads: l
                                    project.notes_root / "protocols" / f"{protocol}.md"] if c.is_file()), None)
         if target is None:
             raise SystemExit(f"找不到 protocol：{protocol}")
-        rel = os.path.relpath(target.resolve(), folder.resolve())
+        rel = Path(os.path.relpath(target.resolve(), folder.resolve())).as_posix()
         text = text.replace("protocol:\n", f"protocol: {rel}\n", 1)
     folder.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -588,7 +588,7 @@ def dolt_remote_url(origin: str) -> str:
         return f"git+ssh://{m.group(1)}@{m.group(2)}/{m.group(3)}"
     if re.match(r"^(https?|ssh|file)://", origin):
         return "git+" + origin
-    return "git+file://" + str(Path(origin).expanduser().resolve())
+    return "git+" + Path(origin).expanduser().resolve().as_uri()
 
 
 def sh(root: Path, *args: str) -> subprocess.CompletedProcess:

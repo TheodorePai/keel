@@ -1,4 +1,8 @@
+import json
+import os
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -132,12 +136,19 @@ class TestVerify(unittest.TestCase):
         (self.root / "work").mkdir()
 
     def configure(self, command):
-        (self.root / "keel.toml").write_text(f"verify = {command!r}\n")
+        (self.root / "keel.toml").write_text(f"verify = {json.dumps(command)}\n")
 
     def test_failing_verify_blocks_check_and_staged_commit(self):
         from keel.cli import check, load_project
         from keel.snapshots import check_git
-        self.configure("test -f ok || { echo 'contract broken'; exit 3; }")
+        script = self.root / "work/contract probe.py"
+        script.write_text("from pathlib import Path\n"
+                          "import sys\n"
+                          "if not Path('ok').is_file():\n"
+                          "    print('contract broken')\n"
+                          "    sys.exit(3)\n")
+        args = [sys.executable, script.name]
+        self.configure(subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args))
         self.base.commit()
         found = [f for f in check(load_project(self.root)) if f.rule == "verify"]
         self.assertEqual(len(found), 1)
@@ -145,6 +156,7 @@ class TestVerify(unittest.TestCase):
         self.assertIn("verify", {f.rule for f in check_git(self.root, staged=True)})
         (self.root / "work/ok").write_text("")   # 在 work/ 下执行
         self.assertNotIn("verify", {f.rule for f in check(load_project(self.root))})
+        self.assertNotIn("verify", {f.rule for f in check_git(self.root, staged=True)})
 
     def test_history_checks_do_not_rerun_verify(self):
         from keel.snapshots import check_git
