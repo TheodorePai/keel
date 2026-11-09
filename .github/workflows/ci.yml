@@ -133,7 +133,10 @@ jobs:
         working-directory: ${{ needs.source.outputs.directory }}
         shell: python
         run: |
+          import sys
+          from pathlib import Path
           import unittest
+          sys.path.insert(0, str(Path.cwd()))
           names = ['tests.test_entrypoints.TestRealBeadsEntrypoints',
                    'tests.test_init.TestPublishBeads', 'tests.test_worktrees.TestWorktreeBeads']
           suite = unittest.defaultTestLoader.loadTestsFromNames(names)
