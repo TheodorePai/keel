@@ -4,7 +4,7 @@
 
 已安装 `bd` 时，入口集成测试会使用真实 Beads 验证新建、重跑、默认模板迁移与克隆恢复；远端只使用临时的本地 Git 仓库。
 
-`.github/workflows/ci.yml` 在 Windows、Linux、macOS 的 Python 3.11/3.12 上检查 Git 快照和工作模式入口。快照回归覆盖中文及空格路径、`core.autocrlf=false/true`、暂存/历史检查，以及原 index 和工作区保持不变；入口回归保留 POSIX 文件名中反斜杠的语义。其中跨平台任务只验收这两项修复；Linux 完整测试任务另行安装全部外部工具并拒绝跳过集成测试。
+`.github/workflows/ci.yml` 在 Windows、Linux、macOS 的 Python 3.11/3.12 上检查 Git 快照、工作模式入口和 runtime。快照回归覆盖中文及空格路径、`core.autocrlf=false/true`、暂存/历史检查，以及原 index 和工作区保持不变；入口回归保留 POSIX 文件名中反斜杠的语义。runtime 回归使用真实子进程验证进程身份、跨进程锁及异常退出后的解锁，并验证目录链接（Windows junction）、清理目标被替换、硬链接锁和原子写入失败时的保护。Linux 完整测试任务另行安装全部外部工具并拒绝跳过集成测试。
 
 完整 GitHub 门禁与贡献方式见 [贡献说明](../CONTRIBUTING.md)。
 
