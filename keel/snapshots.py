@@ -45,7 +45,8 @@ def snapshot(root: Path, tree: str, baseline: str, history_ref: str, objects: st
     with tempfile.TemporaryDirectory(prefix="keel-check-") as tmp:
         dest = Path(tmp)
         command(dest, "init", "-q")
-        (dest / ".git/objects/info/alternates").write_text(objects + "\n")
+        # Git 按 LF 分隔对象库路径；Windows 的默认 CRLF 会把 CR 留在路径末尾。
+        (dest / ".git/objects/info/alternates").write_text(objects + "\n", newline="\n")
         command(dest, "read-tree", tree)
         command(dest, "checkout-index", "--all", "--force")
         if not (dest / CONFIG_NAME).is_file():

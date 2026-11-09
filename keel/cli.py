@@ -226,7 +226,7 @@ def check_agent_entrypoints(root: Path, config: dict, *, require_work_mode: bool
         targets = markdown_link_targets(text)
         # 历史快照不追溯施加新增的接入约定；其中已有的链接仍核对可达性。
         if require_work_mode and "keel" in config.get("skills", []) and (
-                entrypoints.WORK_MODE_TARGET not in targets
+                not has_markdown_target(text, entrypoints.WORK_MODE_TARGET)
                 or not (root / entrypoints.WORK_MODE_TARGET).is_file()):
             out.append(Finding("AGENTS.md", "work-mode",
                                "缺少 Keel 工作模式入口；运行 keel init 补齐，保留项目规则"))
@@ -457,6 +457,11 @@ def link_exists(project: Project, note: Note, target: str, registered: dict) -> 
                 and original.resolve().is_relative_to(asset_path.resolve())):
             return original.exists()
     return False
+
+
+def has_markdown_target(text: str, target: str) -> bool:
+    """比较双方都按本机路径规范化，保留链接解析器原有的路径语义。"""
+    return os.path.normpath(target) in markdown_link_targets(text)
 
 
 def check_links(project: Project, notes: list[Note]) -> list[Finding]:
@@ -718,7 +723,7 @@ def init_project(root: Path, prefix: str | None = None, commit: bool = False, gi
         if entrypoints.LEGACY_WORK_MODE_POINTER in text:
             agents.write_text(text.replace(entrypoints.LEGACY_WORK_MODE_POINTER, entrypoints.WORK_MODE_POINTER))
             done.append("AGENTS.md 已补充 skill 与常见错误处理方法的提炼约定")
-        elif entrypoints.WORK_MODE_TARGET not in markdown_link_targets(text):
+        elif not has_markdown_target(text, entrypoints.WORK_MODE_TARGET):
             agents.write_text(text.rstrip() + "\n\n" + entrypoints.WORK_MODE_POINTER + "\n")
             done.append("AGENTS.md 已接入 Keel 默认工作模式")
         elif entrypoints.SKILL_CAPTURE_RULE not in text:

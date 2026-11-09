@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from keel import assets, skills
+from keel import assets, skills, snapshots
 from keel.cli import check, init_project, load_project
 from keel.snapshots import check_git
 from tests.test_check import Base, DECISION, IDEA, run
@@ -43,6 +43,54 @@ class TestSnapshots(Base):
         run(self.root, "git", "add", ".")
         for found in (check(load_project(self.root)), check_git(self.root, staged=True)):
             self.assertEqual({f.rule for f in found}, {"link", "local-link"})
+
+    def test_snapshots_use_lf_with_unicode_paths_and_preserve_source(self):
+        for autocrlf in ("false", "true"):
+            with self.subTest(autocrlf=autocrlf):
+                with tempfile.TemporaryDirectory(prefix="keel snapshot ") as tmp:
+                    root = Path(tmp) / "项目 with spaces"
+                    root.mkdir()
+                    run(root, "git", "init", "-q")
+                    run(root, "git", "config", "user.email", "t@t")
+                    run(root, "git", "config", "user.name", "t")
+                    run(root, "git", "config", "core.autocrlf", autocrlf)
+                    (root / "keel.toml").write_text("skills = []\n")
+                    (root / "AGENTS.md").write_text("# AGENTS.md\n")
+                    (root / "CLAUDE.md").write_text("@AGENTS.md\n")
+                    (root / ".gitignore").write_text("work/.local/\n")
+                    run(root, "git", "add", ".")
+                    run(root, "git", "commit", "--no-verify", "-qm", "seed")
+                    baseline = snapshots.command(root, "rev-parse", "HEAD")
+                    note = root / "docs/ideas/2026-11-03-a.md"
+                    note.parent.mkdir(parents=True)
+                    note.write_text(IDEA)
+                    run(root, "git", "add", ".")
+                    run(root, "git", "commit", "--no-verify", "-qm", "note")
+                    (root / "README.md").write_text("# staged content\n")
+                    run(root, "git", "add", ".")
+                    index = (root / ".git/index").read_bytes()
+                    files = {p.relative_to(root): p.read_bytes() for p in root.rglob("*")
+                             if p.is_file() and ".git" not in p.relative_to(root).parts}
+                    objects = snapshots.command(root, "rev-parse", "--path-format=absolute",
+                                                "--git-path", "objects")
+                    inspected = []
+
+                    def inspect_snapshot(project, **options):
+                        alternates = project.root / ".git/objects/info/alternates"
+                        data = alternates.read_bytes()
+                        self.assertTrue(data.endswith(b"\n"))
+                        self.assertFalse(data.endswith(b"\r\n"))
+                        self.assertEqual(alternates.read_text().splitlines(), [objects])
+                        inspected.append(project.root)
+                        return check(project, **options)
+
+                    with patch.object(snapshots, "check", side_effect=inspect_snapshot):
+                        for options in ({"staged": True}, {"ref": "HEAD"}, {"since": baseline}):
+                            with self.subTest(options=options):
+                                self.assertEqual(check_git(root, **options), [])
+                    self.assertEqual(len(inspected), 3)
+                    self.assertEqual((root / ".git/index").read_bytes(), index)
+                    self.assertEqual({p: (root / p).read_bytes() for p in files}, files)
 
     def test_staged_claude_rules_cannot_hide_behind_clean_worktree(self):
         self.commit()
