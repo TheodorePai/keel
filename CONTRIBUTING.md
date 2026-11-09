@@ -2,7 +2,7 @@
 
 欢迎提交问题和 PR。请说明可复现的触发条件、预期行为、实际结果，以及 Python、Git 和操作系统版本。
 
-贡献 PR 在评审与必需检查通过后以 squash 方式合入 `main`，GitHub 状态为 Merged。维护者同时将改动同步到开发树，后续版本从开发树发布源码快照。合并 PR 不等于发布版本；正式版本以标签和 Release 为准。
+贡献 PR 在评审与必需检查通过后以 squash 方式合入 `main`，GitHub 状态为 Merged。维护者同时将改动同步到开发树，后续版本从开发树发布源码快照。合并 PR 不等于发布版本；正式版本以标签和 Release 为准。公开仓的 [Daily release](https://github.com/omoyx/keel/actions/workflows/release.yml) 每天北京时间 18:00 检查未发布的已合并 PR，有则汇总发版，无则跳过。发布候选通过完整 CI 后才创建标签、安装包和校验文件；main 中的版本号是开发基线，安装正式版请以最新 Release 标签为准。
 
 ## 本地验证
 
