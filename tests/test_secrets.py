@@ -58,6 +58,9 @@ class ConfigurationFixture(unittest.TestCase):
 
         project = self.root / secrets.FNOX_FILE
         project.write_text('[custom]\nnote = "项目😀"\n\n[secrets]\n', encoding="utf-8")
+        ignore = self.root / ".gitignore"
+        legacy_ignore = b"# legacy comment \x80\xff\ncustom/**\r\n"
+        ignore.write_bytes(legacy_ignore)
         names = {"secrets": ["API_KEY=K"]}
         with patch.object(secrets.shutil, "which", return_value="fixture-tool"), \
                 patch.object(secrets, "fnox", return_value=subprocess.CompletedProcess([], 0, "", "")), \
@@ -66,6 +69,10 @@ class ConfigurationFixture(unittest.TestCase):
             self.assertEqual(secrets.checks(self.root, names), [])
             self.assertTrue(all(ok for ok, _ in secrets.doctor(self.root, names)))
         self.assertEqual(tomllib.loads(project.read_text(encoding="utf-8"))["custom"]["note"], "项目😀")
+        self.assertTrue(ignore.read_bytes().startswith(legacy_ignore))
+        saved_ignore = ignore.read_bytes()
+        self.assertEqual(secrets.ensure_gitignore(self.root), [])
+        self.assertEqual(ignore.read_bytes(), saved_ignore)
         self.assertEqual(set(secrets.usage_index()), {"K"})
         self.assertIn(self.root.name, secrets.usage_index()["K"][0])
         self.assertIn("更新说明😀", "\n".join(secrets.inventory()))

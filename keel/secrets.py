@@ -326,12 +326,16 @@ def reference_matches(entry, source: str) -> bool:
 
 def ensure_gitignore(root: Path) -> list[str]:
     path = root / ".gitignore"
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    add = [p for p in ENV_IGNORE if p not in lines]
+    # Existing Git ignore files may have legacy-encoded comments. Preserve
+    # their bytes and append only ASCII, without imposing TOML's UTF-8 format.
+    original = path.read_bytes() if path.exists() else b""
+    add = [p.encode("ascii") for p in ENV_IGNORE if p.encode("ascii") not in original.splitlines()]
     if not add:
         return []
-    path.write_text("\n".join([*lines, "", "# 明文密钥文件（密钥用 fnox，见 keel secret）", *add]).lstrip("\n") + "\n",
-                    encoding="utf-8")
+    prefix = original + (b"\n" if original and not original.endswith(b"\n") else b"")
+    if prefix:
+        prefix += b"\n"
+    path.write_bytes(prefix + b"# Plaintext secrets (managed by keel secret)\n" + b"\n".join(add) + b"\n")
     return [".gitignore 忽略 .env"]
 
 
