@@ -1,78 +1,113 @@
 # Keel
 
-跨项目的 Agent 工作流底座：笔记结构、任务（Beads）、大文件、密钥和共享 skill 用同一套命令管理。与 Kubernetes 的 keel.sh 无关。
+**面向多项目 Agent 协作的工程工作流。**
 
-## 安装
+[![CI](https://github.com/omoyx/keel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/omoyx/keel/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/omoyx/keel)](https://github.com/omoyx/keel/releases/latest) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-每台机器装一次。需要 Python 3.11+（uv 会自动准备）、`gh` 和 `bd`；大文件功能另需 `hf`（`uv tool install huggingface_hub`）。
+Keel 用一套命令组织项目知识、任务、大文件、密钥和共享 skill，让开发者在切换项目、Agent 或机器时，能够沿用已有约定、恢复工作上下文，并在提交前检查项目结构。
+
+[快速开始](#快速开始) · [使用指南](USAGE.md) · [版本记录](https://github.com/omoyx/keel/releases) · [参与贡献](CONTRIBUTING.md)
+
+## 为什么使用 Keel
+
+当多个项目各自维护 Agent 规则、任务记录和环境配置时，同一套流程容易重复编写，项目知识也容易散落在历史对话里。Keel 将这些约定整理为随项目保存、可以检查和更新的文件：
+
+- **知识有归属**：为架构说明、设计决策、研究和实测报告提供不同模板，检查结构、引用和定稿约束。
+- **任务可接续**：接入 [Beads](https://github.com/steveyegge/beads)，用任务与依赖记录进展；通过 `keel status` 查看进行中、阻塞项和里程碑。
+- **资产可恢复**：大文件通过清单登记，按存储位置取回并校验摘要；运行产物有独立的生命周期管理。
+- **密钥按需使用**：基于 [fnox](https://github.com/jdx/fnox) 与 [age](https://github.com/FiloSottile/age) 保存共享密钥，项目只声明所需名称，运行时注入。
+- **约定可复用**：分发共享 skill，维护 Agent 入口，并将结构检查接入 Git 提交钩子。
+
+适合希望在多个代码仓库中复用协作流程的开发者。日常任务操作直接使用 `bd`；项目中的 `docs/` 也可以作为 Obsidian 笔记查看。
+
+## 快速开始
+
+### 1. 安装
+
+需要 Python 3.11+、[uv](https://docs.astral.sh/uv/getting-started/installation/)、Git 和 [Beads CLI（`bd`）](https://github.com/steveyegge/beads)。Keel 的 Python 包仅使用标准库；GitHub、大文件和密钥功能的外部工具见[依赖说明](USAGE.md#依赖)。
+
+从已发布的版本安装：
 
 ```bash
-uv tool install keel --from git+https://github.com/omoyx/keel.git@v<版本>
+uv tool install git+https://github.com/omoyx/keel.git@v0.5.5
+keel --version
 ```
 
-升级：把版本标签换成新的，加 `--force` 再执行一次，然后在各项目里运行 `keel init` 更新钩子。
+其他版本见 [Releases](https://github.com/omoyx/keel/releases)。
 
-## 新项目
+### 2. 接入项目
 
 ```bash
-mkdir my-app && cd my-app
-keel init --github
+mkdir my-project
+cd my-project
+keel init
 ```
 
-依次完成 `git init`、`bd init`、写入规则与配置、装入共享 skill，并且只提交它管理的文件。Beads 的 skill 和 Claude/Codex/Cursor 上下文钩子由 `bd setup` 安装，入口说明由 Keel 统一维护。加 `--github` 时，还会另建一个私有仓库，推送代码和任务库。
+`keel init` 初始化 Git 和 Beads，生成项目配置、Agent 入口、共享 skill 与提交钩子，并只提交它管理的文件。已有项目也可以在根目录运行；原有项目规则会保留，冲突会提示处理。
 
-在 Obsidian 里用“打开文件夹作为库”选择项目根目录，就能看到任务面板和笔记视图。
-
-## 另一台机器
-
-```bash
-git clone https://github.com/<你>/my-app.git && cd my-app
-keel init     # 取回任务库，启用钩子，生成本机 Obsidian 模板
-keel fetch    # 需要时取回大文件
-```
-
-## 命令
-
-| 命令 | 用途 |
-|---|---|
-| `keel init [--github]` | 新建项目，或在新机器上恢复项目 |
-| `keel new` / `types` / `check` | 按类型写笔记，提交前检查结构 |
-| `keel status` | 查看进行中、阻塞的任务和里程碑 |
-| `keel local status` / `clean` | 查看运行产物大小，预览或显式清理指定路径 |
-| `keel asset` / `fetch` | 登记与取回大文件 |
-| `keel secret` | 声明密钥，运行时注入（值存放在 fnox） |
-| `keel sync` / `skills` | 装入共享 skill |
-| `keel doctor` | 检查工具、账号、存储 |
-
-每条命令的细节见 `keel <命令> --help`。日常任务直接用 `bd`（`bd ready`、`bd update <id> --claim`、`bd close <id>`），Keel 不代理。
-
-## 接入约定
-
-项目不依赖 Keel 源码：`keel init` 装入 `keel` skill，并在 `AGENTS.md` 补齐 skill 与默认工作模式的简短入口。项目自己的职责、边界及必要调用条件仍写在 `AGENTS.md`；Keel 使用入口例如：
+接入后，项目按以下职责组织：
 
 ```text
-本项目使用 Keel 工作流（命令 keel，说明见 .agents/skills/keel/SKILL.md；不是 keel.sh）。
+my-project/
+├── AGENTS.md        # 项目职责、边界与 Agent 能力入口
+├── keel.toml        # Keel 配置
+├── .agents/skills/  # 共享与项目专用 skill
+├── .beads/          # 任务、依赖与进度
+├── docs/            # 项目知识与证据
+└── work/            # 源码、数据与正式交付物
 ```
 
-项目根目录的 `CLAUDE.md` 只保留一行 `@AGENTS.md`，项目规则统一写在 `AGENTS.md`，避免重复和冲突。
-`AGENTS.md` 同时简短引用 `.agents/skills/beads/SKILL.md`；完整任务流程由该 skill 和 `bd prime` 提供。默认在完成可验证里程碑且项目检查通过后，主动进行本地 Git 提交，只包含当前任务的改动。Git 推送和 Dolt 远端同步沿用用户、上层指令或项目规则的已有授权；未约定目标或范围时再确认，已有授权无需重复确认。用户或项目的额外限制仍须遵守。
-重复运行 `keel init` 会原位更新独立的已知旧默认授权条款，保留项目自定义规则、代码示例和注释；不会把新旧默认条款叠加。即使使用 `--no-commit` 仅准备文件，也会写入该默认约定。
-`keel init` 补齐缺失的入口，并自动迁移已核实的 Beads 1.3.2 默认模板，保留 `AGENTS.md` 中的项目规则。未知或改过的生成块、`CLAUDE.md` 的额外规则会在初始化前被拦截，保留原文并提示手动迁移。
-`keel check` 和提交前的暂存检查会拦截缺失入口、额外内容及不存在的导入目标。
+需要同时创建 GitHub 私有仓库时，使用 `keel init --github`；它会推送代码和任务库，需要先安装并登录 `gh`。只准备文件、不初始化任务库和提交时，使用 `keel init --no-commit`。
 
-新项目默认采用[工作模式](keel/data/skills/keel/references/work-mode.md)：常驻约定保留职责、边界和重要能力的调用条件；流程放项目 skill，资料按需读取，确定性工作交给工具。入口与共享说明随 Keel 版本分发，检查器验证可达性与结构；能力是否正确触发仍需按风险用实际场景验收。
-已有项目升级后运行 `keel init` 补齐工作模式入口及 skill 提炼约定，并保留原有规则。经实际验证、值得复用的操作流程和常见错误处理方法应补充已有或创建项目 skill；能用代码、测试或检查防止复发的，同时落实。启用 `keel` skill 却删除工作模式入口，或入口中的本地 Markdown 链接失效时，`keel check` 会报错。
+### 3. 开始使用
 
-## 源码
+```bash
+bd ready                           # 找到可以开始的任务
+keel new reference "项目架构"       # 新建架构说明，按模板填写
+keel check                         # 检查当前项目
+```
 
-- [keel](keel/README.md)：`keel` 命令的 Python 包，连同随包分发的模板、笔记类型和共享 skill
-- [tests](tests/README.md)：单元测试，`python3 -m unittest discover -s tests -t .`
-- [moi](moi/README.md)：可选的本地人用工作台，读取项目情况并提供固定快捷操作
+`keel check` 会检查笔记结构与链接、Agent 入口、共享 skill、项目布局，以及进入 Git 的大文件、明文密钥文件和疑似密钥。提交前还会检查实际暂存的内容。
 
-## 贡献
+## 常用命令
 
-提交问题、PR 和 CI 检查的范围见 [贡献说明](CONTRIBUTING.md)。
+| 要做什么 | 命令 |
+|---|---|
+| 新建或恢复项目 | `keel init [--github]` |
+| 查看笔记类型、新建笔记 | `keel types` · `keel new <类型> <标题>` |
+| 检查项目或暂存内容 | `keel check` · `keel check --staged` |
+| 查看任务与里程碑 | `keel status` |
+| 登记、取回与校验大文件 | `keel asset` · `keel fetch` |
+| 声明与管理共享密钥 | `keel secret` |
+| 更新或查看共享 skill | `keel sync` · `keel skills` |
+| 查看或清理运行产物 | `keel local status` · `keel local clean` |
+| 排查工具、账号和存储问题 | `keel doctor` |
+
+各命令的参数见 `keel <命令> --help`；任务认领、更新和关闭直接使用 `bd`。
+
+## 文档与集成
+
+- [使用指南](USAGE.md)：依赖、升级、换机恢复、Agent 入口及兼容处理。
+- [默认工作模式](keel/data/skills/keel/references/work-mode.md)：项目规则、skill 与工具如何分工。
+- [知识收尾](keel/data/skills/keel/references/knowledge-upkeep.md)：让已验证的结论留在可继续使用的位置。
+- [运行产物管理](keel/data/skills/keel/references/runtime-files.md)：运行记录、保留和清理规则。
+
+Beads 的 skill 与 Claude Code、Codex、Cursor 上下文钩子由 `bd setup` 安装，项目入口由 Keel 维护。Obsidian 可直接打开项目根目录作为库；可选的 [moi 工作台](moi/README.md) 为试用组件，需单独接入。
+
+## 获取帮助与参与贡献
+
+遇到问题可先运行 `keel doctor`，再到 [GitHub Issues](https://github.com/omoyx/keel/issues) 提供复现步骤、预期与实际行为，以及操作系统、Python 和 Keel 版本。
+
+欢迎提交改进建议和 PR。开发环境、测试要求及 CI 检查见[贡献说明](CONTRIBUTING.md)。
+
+源码导航：
+
+- [keel](keel/README.md)：Python 命令行工具与随包分发的模板、配置和 skill。
+- [tests](tests/README.md)：单元测试与集成回归。
+- [moi](moi/README.md)：可选的本地工作台适配器。
 
 ## 许可证
 
-[MIT](LICENSE)。内置的第三方 Obsidian 插件和主题遵循各自的许可证，见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+Keel 采用 [MIT License](LICENSE)。内置第三方 Obsidian 插件和主题遵循各自许可证，见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+
+本项目与 Kubernetes 自动部署工具 [keel.sh](https://keel.sh/) 无关。
