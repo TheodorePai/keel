@@ -1,4 +1,7 @@
 import json
+import ntpath
+import os
+import posixpath
 import shutil
 import subprocess
 import tempfile
@@ -9,6 +12,40 @@ from unittest.mock import patch
 from keel import cli, entrypoints
 from keel.snapshots import check_git
 from tests.test_check import Base, run
+
+
+class TestMarkdownTargetMatching(unittest.TestCase):
+    def test_equivalent_work_mode_links_match_with_both_path_flavours(self):
+        target = entrypoints.WORK_MODE_TARGET
+        links = (target, "./" + target, target + "#sections",
+                 target.replace("work-mode", "work%2Dmode"),
+                 target.replace("references/", "references/../references/"))
+        for normalize in (ntpath.normpath, posixpath.normpath):
+            with self.subTest(path_flavour=normalize.__module__):
+                with patch.object(cli.os.path, "normpath", normalize):
+                    for link in links:
+                        with self.subTest(link=link):
+                            self.assertTrue(cli.has_markdown_target(f"[Mode]({link})", target))
+
+    def test_other_targets_and_examples_do_not_satisfy_work_mode_link(self):
+        target = entrypoints.WORK_MODE_TARGET
+        texts = (f"[Mode]({target}.bak)", f"[Mode](https://example.com/{target})",
+                 f"`[Mode]({target})`", f"```md\n[Mode]({target})\n```",
+                 f"<!-- [Mode]({target}) -->", "[Mode](#sections)")
+        for normalize in (ntpath.normpath, posixpath.normpath):
+            with self.subTest(path_flavour=normalize.__module__):
+                with patch.object(cli.os.path, "normpath", normalize):
+                    for text in texts:
+                        with self.subTest(text=text):
+                            self.assertFalse(cli.has_markdown_target(text, target))
+
+    def test_backslash_retains_native_path_semantics(self):
+        text = "[Reference](docs/local%5Cguide.md)"
+        for normalize, expected in ((ntpath.normpath, True), (posixpath.normpath, False)):
+            with self.subTest(path_flavour=normalize.__module__):
+                with patch.object(cli.os.path, "normpath", normalize):
+                    self.assertEqual(cli.has_markdown_target(text, "docs/local/guide.md"), expected)
+                    self.assertTrue(cli.has_markdown_target(text, "docs/local\\guide.md"))
 
 
 class TestEntrypointProtection(Base):
@@ -52,6 +89,20 @@ class TestEntrypointProtection(Base):
         for old in entrypoints.LEGACY_GIT_AUTHORITIES:
             self.assertNotIn(old, updated)
         self.assertEqual(entrypoints.with_git_authority(updated), updated)
+
+    def test_local_link_keeps_native_filename_semantics(self):
+        # POSIX 下反斜杠是文件名字符；Windows 下它是目录分隔符。
+        relative = "docs/local/guide.md" if os.name == "nt" else "docs/local\\guide.md"
+        target = self.root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# Local guide\n")
+        (self.root / "AGENTS.md").write_text("[Reference](docs/local%5Cguide.md)\n")
+        self.assertEqual(cli.check_agent_entrypoints(self.root, {}), [])
+
+    def test_work_mode_link_still_requires_an_existing_file(self):
+        (self.root / "AGENTS.md").write_text(f"[Mode]({entrypoints.WORK_MODE_TARGET})\n")
+        found = cli.check_agent_entrypoints(self.root, {"skills": ["keel"]})
+        self.assertIn("work-mode", {finding.rule for finding in found})
 
     def test_entrypoint_links_ignore_examples_and_check_actual_local_targets(self):
         agents = self.root / "AGENTS.md"
