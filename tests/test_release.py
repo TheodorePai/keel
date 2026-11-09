@@ -20,6 +20,12 @@ spec.loader.exec_module(release)
 
 
 class TestVersionSelection(unittest.TestCase):
+    def test_draft_lookup_falls_back_to_the_authenticated_release_list(self):
+        draft = {"tag_name": "v0.5.4", "id": 123, "draft": True}
+        with patch.object(release, "api", side_effect=[None, [draft]]) as api:
+            self.assertEqual(release.tagged_release("v0.5.4"), draft)
+            self.assertIn("releases?per_page=100", api.call_args.args[0])
+
     def test_fixes_and_maintenance_use_one_patch(self):
         prs = [{"title": "fix: Windows paths"}, {"title": "ci: add gates"}]
         self.assertEqual(release.next_version("v0.5.3", prs), "v0.5.4")
@@ -125,6 +131,40 @@ class TestReleaseGit(unittest.TestCase):
             self.assertEqual(self.in_repo(release.plan_release), {"ready": False})
             candidate.assert_not_called()
             push.assert_not_called()
+
+    def test_pending_tag_is_resumed_without_moving_to_new_main(self):
+        (self.repo / "README.md").write_text("Accepted fix\n")
+        self.git("commit", "-qam", "fix: accepted")
+        source = self.git("rev-parse", "HEAD")
+        sha = self.in_repo(release.candidate, source, "v0.5.4", self.root / "candidate")
+        self.git("tag", "v0.5.4", sha)
+        (self.repo / "README.md").write_text("Controller fix after pending release\n")
+        self.git("commit", "-qam", "fix: release controller")
+        tip = self.git("rev-parse", "HEAD")
+        self.git("update-ref", "refs/remotes/origin/main", tip)
+        real_git = release.git
+        def local_git(*args, **kwargs):
+            if args[0] == "fetch":
+                return ""
+            if args[0] == "ls-remote":
+                return f"{sha}\trefs/tags/v0.5.4" if args[-1] == "refs/tags/v0.5.4" else ""
+            return real_git(*args, **kwargs)
+        prs = [{"title": "fix: accepted", "number": 1}]
+        draft = {"tag_name": "v0.5.4", "draft": True,
+                 "body": f"<!-- keel-release-source: {source} -->"}
+        with patch.dict(os.environ, GITHUB_REPOSITORY=release.REPOSITORY), \
+             patch.object(release, "git", side_effect=local_git), \
+             patch.object(release, "api", return_value={"tag_name": "v0.5.3"}), \
+             patch.object(release, "tagged_release", return_value=draft), \
+             patch.object(release, "merged_prs", return_value=prs), \
+             patch.object(release, "candidate") as candidate, \
+             patch.object(release, "push") as push:
+            plan = self.in_repo(release.plan_release)
+            self.assertEqual(plan["source"], source)
+            self.assertEqual(plan["candidate"], sha)
+            self.assertEqual(plan["tag"], "v0.5.4")
+            candidate.assert_not_called()
+            push.assert_called_once_with(f"{sha}:refs/heads/codex/release-v0.5.4-{source[:12]}")
 
 
 class TestReleaseAssets(unittest.TestCase):

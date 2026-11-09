@@ -68,8 +68,13 @@ jobs:
         with:
           name: python-distributions
           path: ${{ runner.temp }}/release-dist
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: release-control
+          persist-credentials: false
       - name: Publish the exact tested snapshot and verified distributions
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_PLAN: ${{ needs.plan.outputs.plan }}
-        run: python3 .github/scripts/release.py publish --dist "$RUNNER_TEMP/release-dist"
+        run: python3 "$GITHUB_WORKSPACE/release-control/.github/scripts/release.py" publish --dist "$RUNNER_TEMP/release-dist"

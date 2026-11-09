@@ -39,6 +39,23 @@ def api(path: str, optional: bool = False):
     return json.loads(result.stdout)
 
 
+def tagged_release(tag: str):
+    published = api(f"repos/{REPOSITORY}/releases/tags/{tag}", optional=True)
+    if published:
+        return published
+    # GitHub's by-tag endpoint can hide drafts even from their creator. The
+    # authenticated release list includes them and provides the stable API ID.
+    page = 1
+    while True:
+        releases = api(f"repos/{REPOSITORY}/releases?per_page=100&page={page}")
+        for release in releases:
+            if release["tag_name"] == tag:
+                return release
+        if len(releases) < 100:
+            return None
+        page += 1
+
+
 def version_tuple(value: str) -> tuple[int, int, int]:
     if not VERSION.fullmatch(value):
         raise ValueError(f"Expected a stable semantic version, got {value!r}")
@@ -175,8 +192,23 @@ def plan_release(override: str = "") -> dict:
         raise ValueError("Cannot read the reviewed package version")
     if not override and version_tuple(package_version[1]) > version_tuple(tag):
         tag = "v" + package_version[1]
-    with tempfile.TemporaryDirectory(prefix="keel-release-") as temporary:
-        sha = candidate(source, tag, Path(temporary) / "source")
+    existing = git("ls-remote", "origin", f"refs/tags/{tag}")
+    if existing:
+        sha = existing.split()[0]
+        pending = tagged_release(tag)
+        if pending and not pending["draft"]:
+            raise ValueError("A release was published while planning; retry the check")
+        if not pending:
+            pending_source = git("show", "-s", "--format=%P", sha)
+            pending = {"tag_name": tag,
+                       "body": f"<!-- keel-release-source: {pending_source} -->"}
+        source = release_base(pending, source)
+        prs = merged_prs(base, source, repo)
+        if not prs:
+            raise ValueError("Pending snapshot does not contain unreleased merged PRs")
+    else:
+        with tempfile.TemporaryDirectory(prefix="keel-release-") as temporary:
+            sha = candidate(source, tag, Path(temporary) / "source")
     branch = f"codex/release-{tag}-{source[:12]}"
     current = git("ls-remote", "origin", f"refs/heads/{branch}")
     if current and current.split()[0] != sha:
@@ -227,7 +259,7 @@ def publish(plan: dict, directory: Path) -> str:
     tag, sha = plan["tag"], plan["candidate"]
     version_tuple(tag)
     files = validate_distributions(directory, tag)
-    release = api(f"repos/{REPOSITORY}/releases/tags/{tag}", optional=True)
+    release = tagged_release(tag)
     if release and not release["draft"]:
         target = git("ls-remote", "origin", f"refs/tags/{tag}")
         if not target or target.split()[0] != sha:
@@ -259,13 +291,15 @@ def publish(plan: dict, directory: Path) -> str:
                 "--verify-tag", "--draft", "--title", f"keel {tag}", "--notes-file", str(notes))
     command("gh", "release", "upload", tag, "--repo", REPOSITORY, "--clobber",
             *(str(path) for path in files))
-    uploaded = api(f"repos/{REPOSITORY}/releases/tags/{tag}")
+    uploaded = tagged_release(tag)
+    if not uploaded:
+        raise ValueError("Uploaded draft could not be found")
     assets = {asset["name"]: asset.get("digest") for asset in uploaded["assets"]}
     for path in files:
         if assets.get(path.name) != "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest():
             raise ValueError("Uploaded asset checksum verification failed")
     command("gh", "release", "edit", tag, "--repo", REPOSITORY, "--draft=false", "--latest")
-    published = api(f"repos/{REPOSITORY}/releases/tags/{tag}")
+    published = api(f"repos/{REPOSITORY}/releases/{uploaded['id']}")
     if published["draft"] or published["prerelease"]:
         raise ValueError("Release is not published as stable")
     try:
