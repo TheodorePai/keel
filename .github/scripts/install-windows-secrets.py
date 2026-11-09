@@ -17,12 +17,19 @@ tools = [
 ]
 for name, repository, asset, expected, executables in tools:
     archive = root / f"{name}.zip"
-    subprocess.run(["curl.exe", "--proto", "=https", "--tlsv1.2", "--fail", "--location",
+    command = ["curl.exe", "--proto", "=https", "--tlsv1.2", "--fail", "--location",
                     "--silent", "--show-error", "--retry", "5", "--retry-delay", "5",
                     "--connect-timeout", "20", "--max-time", "180",
                     "-H", "Accept: application/octet-stream", "-H", "Cache-Control: no-cache",
-                    "--output", str(archive),
-                    f"https://api.github.com/repos/{repository}/releases/assets/{asset}"], check=True)
+                    "--output", str(archive)]
+    api = f"https://api.github.com/repos/{repository}/releases/assets/{asset}"
+    # Anonymous API requests can be rate-limited on shared hosted runners.
+    # Both endpoints must produce the same pinned digest before any execution.
+    release = ("https://github.com/jdx/fnox/releases/download/v1.46.0/fnox-x86_64-pc-windows-msvc.zip"
+               if name == "fnox" else
+               "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-windows-amd64.zip")
+    if subprocess.run([*command, api]).returncode:
+        subprocess.run([*command, release], check=True)
     with archive.open("rb") as stream:
         if hashlib.file_digest(stream, "sha256").hexdigest() != expected:
             raise SystemExit(f"{name} Windows archive SHA-256 mismatch")
