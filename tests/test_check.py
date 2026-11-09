@@ -14,6 +14,18 @@ def run(cwd, *args):
     subprocess.run(args, cwd=cwd, check=True, capture_output=True)
 
 
+def cleanup_temporary(temporary):
+    # Windows can briefly retain directory handles after Beads/Git exit.
+    # Retry only sharing violations; persistent cleanup errors still fail.
+    for attempt in range(20):
+        try:
+            return temporary.cleanup()
+        except PermissionError as error:
+            if os.name != "nt" or error.winerror != 32 or attempt == 19:
+                raise
+            time.sleep(0.1)
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -32,7 +44,7 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         assets.PERSONAL_CONFIG = self._personal
-        self.tmp.cleanup()
+        cleanup_temporary(self.tmp)
 
     def write(self, rel, text):
         path = self.root / "docs" / rel
@@ -342,7 +354,7 @@ class TestDoltRemoteUrl(unittest.TestCase):
         from keel.cli import dolt_remote_url
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "中文 repo #1.git"
-            self.assertEqual(dolt_remote_url(str(path)), "git+" + path.as_uri())
+            self.assertEqual(dolt_remote_url(str(path)), "git+" + path.resolve().as_uri())
             self.assertIn("%20", dolt_remote_url(str(path)))
             self.assertIn("%23", dolt_remote_url(str(path)))
         relative = Path("relative repo.git")

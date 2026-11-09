@@ -11,3 +11,5 @@
 `test_release.py` 验证每日发版的版本选择、积压 PR 检测、无更新跳过、发布来源与版本快照、安装包版本及摘要，以及已发布版本重试时不重复写入。Git 测试使用本地临时仓库，GitHub 写操作使用替身；真实云端发布由 `.github/workflows/release.yml` 验收。
 
 跨平台回归还覆盖本地 Dolt remote 的 file URI 编码、报告的 protocol 引用、入口链接诊断，以及 verify 的失败阻断、工作目录和暂存检查。verify 测试使用同一 Python 解释器执行契约脚本，项目的 verify 命令仍交由本机默认 shell 执行。
+
+Windows Beads 集成任务安装校验 SHA-256 的原生 bd 1.3.2，验收初始化、模板迁移、发布恢复、worktree 数据库和并发认领，拒绝跳过。Dolt 嵌套 Git 缓存路径较长，测试进程通过 GIT_CONFIG_COUNT 向子进程启用 core.longpaths，不修改用户或机器的 Git 配置。

@@ -192,7 +192,7 @@ class TestRealBeadsEntrypoints(Base):
         self.assertEqual(agents.count(".agents/skills/keel/SKILL.md"), 1)
         self.assertEqual(agents.count(".agents/skills/beads/SKILL.md"), 1)
         self.assertEqual(agents.count(entrypoints.GIT_AUTHORITY), 1)
-        self.assertIn(entrypoints.WORK_MODE_TARGET, cli.markdown_link_targets(agents))
+        self.assertTrue(cli.has_markdown_target(agents, entrypoints.WORK_MODE_TARGET))
         self.assertTrue((root / entrypoints.WORK_MODE_TARGET).is_file())
         self.assertTrue((root / ".agents/skills/beads/SKILL.md").is_file())
         self.assertEqual((root / ".agents/skills/beads/SKILL.md").read_bytes(),

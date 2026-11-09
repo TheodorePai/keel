@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from keel import assets, cli
 from keel.snapshots import check_git
-from tests.test_check import DECISION
+from tests.test_check import DECISION, cleanup_temporary
 
 
 class WorktreeFixture(unittest.TestCase):
@@ -20,7 +20,7 @@ class WorktreeFixture(unittest.TestCase):
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="keel-worktree-test-")
-        self.addCleanup(temp.cleanup)
+        self.addCleanup(cleanup_temporary, temp)
         self.base = Path(temp.name).resolve()
         self.root, self.worker = self.base / "main", self.base / "worker"
         self.root.mkdir()
